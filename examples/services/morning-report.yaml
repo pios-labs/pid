@@ -1,0 +1,16 @@
+name: morning-report
+cwd: ~/projects/work
+prompt: |
+  Summarize yesterday's git activity across all repos under ~/projects.
+  Write the summary to ~/reports/$(date +%F).md.
+
+trigger:
+  type: cron
+  schedule: "0 6 * * *"
+
+budget:
+  daily_usd: 0.50
+  on_exceed: notify
+
+restart:
+  policy: never

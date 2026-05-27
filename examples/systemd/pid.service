@@ -1,0 +1,11 @@
+[Unit]
+Description=pi agent supervisor
+After=default.target
+
+[Service]
+ExecStart=/usr/local/bin/pid daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

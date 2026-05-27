@@ -1,0 +1,29 @@
+name: inbox-watcher
+cwd: ~/inbox
+prompt: |
+  Check ~/inbox/ for new files. For each, process per AGENTS.md
+  and move handled files to ~/inbox/processed/.
+
+trigger:
+  type: file_watch
+  path: ~/inbox/
+  events: [add]
+
+budget:
+  daily_usd: 2.00
+  on_exceed: pause
+
+restart:
+  policy: on-failure
+  max_consecutive: 3
+
+gate:
+  - bash:rm
+  - bash:git-push
+  - write:outside_cwd
+
+auto_approve:
+  - read
+  - grep
+  - find
+  - ls

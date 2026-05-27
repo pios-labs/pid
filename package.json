@@ -1,0 +1,45 @@
+{
+	"name": "@pios-labs/pid",
+	"version": "0.0.1",
+	"description": "Supervisor for pi agents. Runs them as long-running services with cost governance, crash-loop quarantine, and a unified approval inbox.",
+	"keywords": ["pi", "agent", "supervisor", "daemon", "llm", "cost-budget"],
+	"homepage": "https://pios.dev",
+	"bugs": "https://github.com/pios-labs/pid/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/pios-labs/pid.git"
+	},
+	"license": "MIT",
+	"author": "",
+	"type": "module",
+	"bin": {
+		"pid": "dist/cli.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": ["dist", "examples", "docs", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+		"clean": "rm -rf dist",
+		"check": "biome check --write --error-on-warnings . && tsc --noEmit",
+		"dev": "tsx watch src/daemon.ts",
+		"start": "node dist/daemon.js",
+		"test": "vitest --run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"commander": "12.1.0",
+		"yaml": "2.9.0",
+		"zod": "3.23.8"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "22.19.19",
+		"tsx": "4.22.1",
+		"typescript": "5.9.3",
+		"vitest": "3.2.4"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

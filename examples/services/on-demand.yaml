@@ -1,0 +1,14 @@
+name: on-demand
+cwd: ~/projects/scratch
+prompt: |
+  Wait for further instructions via `pid send on-demand "<prompt>"`.
+
+trigger:
+  type: manual
+
+restart:
+  policy: never
+
+gate:
+  - bash:rm
+  - bash:sudo
