@@ -4,6 +4,8 @@ Status: draft for review.
 
 This document defines the v0 scope, architecture, schemas, and protocol for `pid`, the pi agent supervisor.
 
+**Minimum pi version:** `>= 0.75.4` (for `willRetry` on `agent_end` events). Recommended: `>= 0.76.0` (for `--session-id` flag and `excludeFromContext` on bash commands).
+
 ## Goals
 
 1. Supervise pi agents as long-running services with crash recovery and clean lifecycle.
@@ -56,9 +58,9 @@ This document defines the v0 scope, architecture, schemas, and protocol for `pid
 
 `pid` is a single Node.js daemon. It spawns one `pi --mode rpc` subprocess per running service. The daemon owns:
 
-- a service registry loaded from `~/.pi/services/*.yaml`
+- a service registry loaded from `~/.pi/pid/services/*.yaml`
 - per-service state (running / stopped / paused / quarantined, budget consumed, restart history, pending approvals)
-- a Unix socket control plane at `~/.pi/pid.sock` for the CLI
+- a Unix socket control plane at `~/.pi/pid/pid.sock` for the CLI
 - one event consumer per running subprocess that parses JSONL from stdout
 - the approval router that collects `extension_ui_request` and surfaces them on demand
 
@@ -67,29 +69,31 @@ State persists to `~/.pi/pid/state.json` on every meaningful change. On daemon r
 ## Directory layout
 
 ```
-~/.pi/
-├── services/                  # service definitions (YAML); watched for changes
-│   ├── inbox-watcher.yaml
-│   └── overnight-summary.yaml
-├── pid/
-│   ├── state.json             # daemon state, atomic writes
-│   ├── logs/                  # per-service raw event streams
-│   │   ├── inbox-watcher.jsonl
-│   │   └── overnight-summary.jsonl
-│   ├── approvals/             # pending approval requests, one file per request
-│   │   └── <uuid>.json
-│   └── budget/                # budget state per service
-│       └── inbox-watcher.json
-├── pid.sock                   # control plane socket, mode 0600
-└── pid.pid                    # daemon pidfile
+~/.pi/                         # pi's existing top-level; pi owns ~/.pi/agent/
+└── pid/                       # everything pid-owned lives under here
+    ├── services/              # service definitions (YAML); watched for changes
+    │   ├── inbox-watcher.yaml
+    │   └── overnight-summary.yaml
+    ├── state.json             # daemon state, atomic writes
+    ├── logs/                  # per-service raw event streams
+    │   ├── inbox-watcher.jsonl
+    │   └── overnight-summary.jsonl
+    ├── approvals/             # pending approval requests, one file per request
+    │   └── <uuid>.json
+    ├── budget/                # budget state per service
+    │   └── inbox-watcher.json
+    ├── pid.sock               # control plane socket, mode 0600
+    └── pid.pid                # daemon pidfile
 ```
+
+Why everything under `~/.pi/pid/` rather than scattered: keeps pid's footprint a single self-contained directory, leaves room for sibling components (`~/.pi/pikg/`, `~/.pi/pifs/`, etc.) to claim their own namespaces without collision, and makes "uninstall pid" a single `rm -rf ~/.pi/pid` operation. Override with `PID_HOME` env var.
 
 ## Service file schema (YAML)
 
 ```yaml
 name: string                   # unique service name (required, matches filename stem)
 command: string                # default: "pi"
-args: [string]                 # default: ["--mode", "rpc", "--no-session"]
+args: [string]                 # default: ["--mode", "rpc", "--session-id", "<service-name>"]
 cwd: path                      # working directory; supports ~ expansion
 env: { KEY: value }            # extra environment variables
 prompt: string                 # initial prompt sent on (re)start; optional
@@ -137,7 +141,7 @@ Validation: a JSON Schema ships in the repo. `pid reload` reports schema errors 
 
 ## Control plane protocol
 
-The daemon listens on `~/.pi/pid.sock`. CLI sends one JSON request per line; daemon responds with one JSON object per request. Optional `id` for correlation.
+The daemon listens on `~/.pi/pid/pid.sock`. CLI sends one JSON request per line; daemon responds with one JSON object per request. Optional `id` for correlation.
 
 ### Commands
 
@@ -198,8 +202,8 @@ Response:
 For each running service, `pid` spawns the subprocess and consumes its stdout JSONL. Every event is:
 
 1. Appended to `~/.pi/pid/logs/<name>.jsonl` (raw, for replay/debugging)
-2. Inspected by the cost governor (assistant message `usage.cost` → budget state)
-3. Inspected by the crash detector (`tool_execution_end.isError`, `extension_error`, `agent_end` with error stop reason)
+2. Inspected by the cost governor (`message_end` where `event.message.role === "assistant"` → `event.message.usage.cost.total` → budget state)
+3. Inspected by the crash detector (`tool_execution_end.isError`, `extension_error`, `agent_end` where last assistant message has `stopReason === "error"`)
 4. Inspected by the approval router (`extension_ui_request` → enqueued; response routed back via stdin when answered)
 
 Parsing follows pi's RPC framing rules: split on `\n` only, strip trailing `\r`. Do not use Node's `readline` (it splits on `U+2028`/`U+2029` which are valid inside JSON strings — see pi RPC docs).
@@ -222,7 +226,7 @@ Per-service state in `~/.pi/pid/budget/<name>.json`:
 }
 ```
 
-On every `message_end` event with `role=assistant`, extract `usage.cost.total` and add to `spent_usd_window`. If `spent_usd_window >= daily_usd`:
+On every `message_end` event where `event.message.role === "assistant"`, extract `event.message.usage.cost.total` and add to `spent_usd_window`. If `spent_usd_window >= daily_usd`:
 
 - Apply `on_exceed`:
   - `pause` — send `{"type":"abort"}` to subprocess, mark service as `paused`, set timer for `window_end` to auto-resume
@@ -248,12 +252,14 @@ Per-service state in memory + persisted:
 
 Failure signature derivation:
 
-| Event | Signature format |
-|---|---|
-| `tool_execution_end` with `isError=true` | `tool:<toolName>:<error_class>` |
-| `extension_error` | `ext:<extensionPath>:<event>` |
-| `agent_end` with `stopReason=error` | `agent:<errorClass>` |
-| Subprocess exit non-zero | `proc:exit_<code>` |
+| Event | Signature format | Notes |
+|-|-|-|
+| `tool_execution_end` with `isError=true` | `tool:<toolName>:error` | No structured exit code; use coarse signature. Optionally parse result text for finer granularity, but treat as best-effort. |
+| `extension_error` | `ext:<extensionPath>:<event>` | Fields available directly on the event. |
+| `agent_end` where last assistant message has `stopReason === "error"` | `agent:error` | `stopReason` is on `event.messages[last]`, not on `agent_end` itself. Only count when `event.willRetry === false` — pi handles its own retries internally. |
+| Subprocess exit non-zero | `proc:exit_<code>` | From Node `child_process` exit event, outside pi's protocol. |
+
+**Important:** `agent_end` events with `willRetry === true` must be ignored by the crash detector. These indicate pi's internal auto-retry for transient errors. Counting them would cause premature quarantine.
 
 On each failure:
 1. Compute signature, prepend to `recent_failures`, prune entries older than `quarantine.window_seconds`
@@ -266,12 +272,27 @@ On each failure:
 
 When the event consumer sees an `extension_ui_request` on stdout:
 
-1. Apply per-service `gate` and `auto_approve` patterns against the request method/args:
-   - `auto_approve` match → immediately reply via subprocess stdin with default approval
+Request fields vary by method:
+
+| Method | Fields | Response format | Needs response? |
+|-|-|-|-|
+| `confirm` | `id`, `method`, `title`, `message`, optional `timeout` | `{ type, id, confirmed: boolean }` | yes |
+| `select` | `id`, `method`, `title`, `options`, optional `timeout` | `{ type, id, value: string }` | yes |
+| `input` | `id`, `method`, `title`, optional `placeholder`, optional `timeout` | `{ type, id, value: string }` | yes |
+| `editor` | `id`, `method`, `title`, optional `prefilled` | `{ type, id, value: string }` | yes |
+| `notify` | `id`, `method`, `message`, `notifyType` | none (fire-and-forget) | no |
+
+Any method can also receive a cancellation response: `{ type, id, cancelled: true }`.
+
+Processing:
+
+1. If `method === "notify"`: log to event stream, do not enqueue. No response needed.
+2. Apply per-service `gate` and `auto_approve` patterns against the request method/args:
+   - `auto_approve` match → immediately reply via subprocess stdin with the appropriate response (`confirmed: true` for confirm, `value: <first-option>` for select, etc.)
    - `gate` match → enqueue in approval inbox
    - No match → default behavior is **enqueue** (safe default; configurable later)
-2. Write request to `~/.pi/pid/approvals/<id>.json` (includes service name, timestamp, raw request)
-3. Increment `pending_approvals` counter on service state
+3. Write request to `~/.pi/pid/approvals/<id>.json` (includes service name, timestamp, raw request)
+4. Increment `pending_approvals` counter on service state
 
 `pid approvals`:
 
@@ -292,11 +313,13 @@ Allow `rm -rf ./tmp`?
 ✓ Approved
 ```
 
-- `confirm`: `pid approve <id>` → `confirmed: true`; `pid deny <id>` → `confirmed: false`
-- `input` / `editor`: opens `$EDITOR` for the response text
-- `--value <v>` skips the prompt and uses the supplied value
+- `confirm`: `pid approve <id>` → writes `{ type: "extension_ui_response", id, confirmed: true }`; `pid deny <id>` → writes `{ ..., confirmed: false }`
+- `select`: `pid approve <id>` → prompts operator to pick from options, writes `{ type: "extension_ui_response", id, value: "<selected>" }`
+- `input` / `editor`: opens `$EDITOR` for the response text, writes `{ type: "extension_ui_response", id, value: "<text>" }`
+- `--value <v>` skips the interactive prompt and uses the supplied value directly
+- `pid deny <id>` for any method → writes `{ type: "extension_ui_response", id, cancelled: true }`
 
-On approve/deny: `pid` writes the matching `extension_ui_response` to the subprocess's stdin, removes the file from `approvals/`, decrements the counter.
+On approve/deny: `pid` writes the response to the subprocess's stdin, removes the file from `approvals/`, decrements the counter.
 
 Pending approvals survive daemon restarts (on disk). On restart, `pid` re-attaches them to relevant services if those services are running again. If a request had a `timeout` field, pi's agent auto-resolves on its own clock; `pid` removes the entry when the timeout elapses to keep the inbox clean.
 
@@ -339,9 +362,9 @@ Two log streams per service:
 ## Security posture (v0)
 
 - Daemon runs as the invoking user; not root
-- `~/.pi/pid.sock` created with mode `0600`
+- `~/.pi/pid/pid.sock` created with mode `0600`
 - No network exposure
-- Service files loaded only from `~/.pi/services/` (no remote loading)
+- Service files loaded only from `~/.pi/pid/services/` (no remote loading)
 - API keys for pi subprocesses inherit from user env / `~/.pi/auth.json`; `pid` never reads them itself
 - Approval files written with mode `0600`
 
@@ -351,7 +374,7 @@ Two log streams per service:
 2. **Service file format**: YAML is most ergonomic, TOML is more constrained, JSON is universally parsed but verbose. Recommendation: YAML with JSON Schema validation.
 3. **Notification channels in v0**: just `pid status` + stderr? Or also system notifications (libnotify, osascript)? Recommendation: stderr + status only for v0; channels in v0.2.
 4. **Cost-per-tool-call gate (`spend:>1.00`)**: pi doesn't expose per-tool-call cost projection. Implementing would mean estimating cost before execution. Recommendation: defer to v0.2.
-5. **Directory layout**: pi already uses `~/.pi/agent/`. Confirm `~/.pi/pid/` and `~/.pi/services/` don't collide. Recommendation: verify against current pi conventions before shipping.
+5. ~~**Directory layout**: resolved. Everything pid-owned lives under `~/.pi/pid/`, including services. No collision with pi's `~/.pi/agent/`.~~
 6. **Daemon lifecycle**: should `pid daemon` daemonize itself (detach, fork, write pidfile) or stay foreground and expect to be supervised by systemd/launchd? Recommendation: **foreground only.** Daemonization is an OS supervisor's job. Document the systemd unit prominently.
 
 ## v0 milestone definition
@@ -381,3 +404,45 @@ Ship v0 when all true:
 - Slack / Telegram / mobile push delivery for approvals
 - Replay / time-travel debugging
 - Windows support
+
+---
+
+# Changelog
+
+All amendments to this spec are recorded here with date, what changed, and why.
+
+### 2026-05-28 00:17 BST — Integrity check against pi v0.76.0
+
+Cross-referenced every technical claim against pi's source and docs at commit `1e168a89`. Also checked internal consistency across all three pid docs. Twelve corrections applied:
+
+**Errors fixed (would have caused implementation bugs):**
+
+1. **`agent_end` stop reason path**: Changed `agent_end with stopReason=error` → `agent_end where last assistant message has stopReason === "error"`. The `stopReason` field lives on the `AssistantMessage` inside `event.messages`, not on the `agent_end` event itself. Source: `packages/agent/src/types.ts`, `packages/coding-agent/src/modes/rpc/rpc-types.ts`.
+
+2. **Service registry path** (line 59): `~/.pi/services/*.yaml` → `~/.pi/pid/services/*.yaml`. Pre-refactor path had leaked through. The directory layout diagram (line 68–85) already showed the correct path.
+
+3. **Socket path** (lines 62, 142, 345): `~/.pi/pid.sock` → `~/.pi/pid/pid.sock`. Same pre-refactor leak. Three occurrences fixed.
+
+4. **Security section service path** (line 346): `~/.pi/services/` → `~/.pi/pid/services/`. Same issue.
+
+5. **Cost governor field path** (line 227): `usage.cost.total` → `event.message.usage.cost.total`, filtered by `event.message.role === "assistant"`. The cost is nested inside the `message_end` event's `message` field, not directly on the event. Source: `packages/ai/src/types.ts` (`Usage` interface), confirmed by regression test `3982-message-end-cost-override.test.ts`.
+
+6. **Bash exit code signatures**: Changed `tool:bash:exit_127` to `tool:bash:error` (coarse). `tool_execution_end` has no structured `exitCode` field; the exit code is in human-readable result text. Heuristic parsing noted as optional best-effort. Source: `packages/agent/src/types.ts` (`ToolExecutionEndEvent`).
+
+**Design gaps addressed:**
+
+7. **`willRetry` filtering**: Added mandatory filtering of `agent_end` events where `willRetry === true`. These are pi's internal auto-retries for transient errors; counting them would cause premature quarantine. Added in pi 0.75.4. Source: `packages/coding-agent/CHANGELOG.md`.
+
+8. **`--session-id` adoption**: Replaced `--no-session` default args with `--session-id <service-name>`. Gives pid deterministic session identity per service, resumable across restarts. Added in pi 0.76.0. Source: `packages/coding-agent/docs/rpc.md`.
+
+9. **Minimum pi version**: Added `>= 0.75.4` requirement (for `willRetry`), recommended `>= 0.76.0` (for `--session-id` and `excludeFromContext`).
+
+10. **`extension_ui_request` method variants**: Expanded the approval inbox section with per-method field tables. Request fields vary (`confirm` has `title`+`message`; `select` has `title`+`options`; `input` has `title`+`placeholder`; `notify` is fire-and-forget). Response formats vary (`confirmed: boolean` for confirm; `value: string` for select/input/editor; `cancelled: true` for denial). `notify` events logged but not enqueued. Source: `packages/coding-agent/src/modes/rpc/rpc-types.ts` (`RpcExtensionUIRequest`, `RpcExtensionUIResponse` union types).
+
+**Internal consistency fixes:**
+
+11. **Stale open question 5**: Marked as resolved. The directory layout already places everything under `~/.pi/pid/`, making the collision concern moot.
+
+12. **Event consumer description**: Updated to show correct nested field paths for cost (`event.message.usage.cost.total`) and crash detection (`event.messages[last].stopReason`).
+
+**Verdict:** pid's architecture is viable. All three v0 products are buildable on pi's current documented RPC protocol without upstream changes. Zero philosophical conflicts with pi's design. Zero duplication of existing pi features.
