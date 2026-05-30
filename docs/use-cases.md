@@ -2,7 +2,7 @@
 
 `pid` supervises [pi](https://pi.dev) agents that run in the background: it enforces per-service cost budgets, restarts them when they crash, quarantines the ones stuck in a failure loop, and routes any approval requests to one place. This page is about *when that's worth it* — the real jobs pid is good at, with a ready-to-run service file for each.
 
-Every example here is a real `examples/services/*.yaml` in this repo, validated in CI.
+Every example here is a real `examples/services/*.yaml` in this repo, validated in CI. For a single annotated file that exercises (almost) every available field, see [`examples/services/kitchen-sink.yaml`](../examples/services/kitchen-sink.yaml).
 
 ## Why this matters now
 

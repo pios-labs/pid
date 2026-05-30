@@ -1,0 +1,118 @@
+# kitchen-sink.yaml — a reference service that exercises (almost) every field.
+#
+# This is documentation you can run: it loads and validates like any other
+# service, but it is NOT meant to be used as-is. Trigger is "manual" so it never
+# fires on its own; the cron / file_watch shapes are shown commented below.
+#
+# Two groups of fields:
+#   1. pi configuration — becomes pi CLI flags (model, tools, extensions, ...).
+#   2. pid policy        — supervision pid layers on top (budget, restart, ...).
+# Defaults are noted; omit any field to accept its default.
+
+name: kitchen-sink            # required; must match the filename stem; kebab-case
+command: pi                   # default: pi. Binary pid spawns (a wrapper, an
+                              # absolute path...). pid always appends
+                              # --mode rpc --session-id <name>.
+cwd: ~/work/myapp             # working directory for the agent (optional)
+
+# Environment for the spawned pi process (optional; default: {}). Prefer
+# INHERITING secrets from the daemon's own environment over writing them here —
+# don't put API keys in a file you might commit.
+env:
+  TZ: Europe/London
+  LOG_LEVEL: info
+
+prompt: |
+  The task the agent runs each time it is triggered. Keep it specific and
+  bounded; say what NOT to do (e.g. "never push to main").
+
+# --- pi configuration (these become pi CLI flags) ---
+
+model:
+  provider: anthropic         # --provider
+  id: claude-opus-4-8         # --model
+  thinking: high              # --thinking : off | minimal | low | medium | high | xhigh
+  scoped:                     # --models : scoped model list (e.g. fallbacks)
+    - anthropic/*
+    - zai/glm-*
+
+# Tool allowlist (--tools). An array allows ONLY these; `false` (--no-tools)
+# gives the agent no tools at all.
+tools:
+  - read
+  - grep
+  - find
+  - ls
+  - bash
+# no_builtin_tools: true      # --no-builtin-tools. MUTUALLY EXCLUSIVE with `tools`
+                              # (set one or the other). Disables only built-in
+                              # tools while keeping extension tools.
+
+extensions:                   # load only these (--no-extensions, then -e each)
+  - ./extensions/secret-scanner.ts
+# extensions: false           # ...or `false` to skip extension discovery entirely
+
+skills:                       # load only these (--no-skills, then --skill each)
+  - ./skills/code-review/
+# skills: false               # ...or `false` to load no skills
+
+context_files: false          # --no-context-files. Only the literal `false` is
+                              # valid (it's a disable switch). Omit for pi default.
+
+system_prompt: |              # --system-prompt : REPLACE pi's system prompt
+  You are a careful, conservative reviewer running unattended.
+append_system_prompt: |       # --append-system-prompt : ADD to it instead
+  Prefer the smallest correct change. Never delete tests to make CI pass.
+
+# Escape hatch: any pi flag pid does not model natively yet. pid appends these
+# verbatim. RULE: only put flags here that have NO dedicated YAML field above —
+# pid REJECTS the service if an arg here duplicates a field (e.g. --model).
+# Catchall-friendly examples: --exclude-tools, --name, --prompt-template, --offline.
+args:
+  - "--verbose"
+
+# --- trigger : exactly one type ---
+
+trigger:
+  type: manual                # run only when you `pid start kitchen-sink`
+# trigger:                    # ...or on a cron schedule:
+#   type: cron
+#   schedule: "0 2 * * *"
+# trigger:                    # ...or when files change under a path:
+#   type: file_watch
+#   path: ~/inbox/
+#   events: [add, change, unlink]   # default: [add]
+
+# --- pid policy (supervision pid adds on top) ---
+
+budget:
+  daily_usd: 20.00            # per-day dollar cap
+  weekly_usd: 80.00           # per-week dollar cap
+  daily_tokens: 5000000       # per-day token cap (any cap may be used alone)
+  on_exceed: pause            # default: pause. pause | quarantine | notify
+  reset_tz: Europe/London     # default: UTC. timezone the windows reset in
+
+restart:
+  policy: on-failure          # default: on-failure. always | on-failure | never
+  max_consecutive: 5          # default: 5. give up after this many failed restarts
+  backoff:
+    initial_ms: 1000          # default: 1000
+    max_ms: 60000             # default: 60000
+    factor: 2                 # default: 2 (exponential)
+
+quarantine:
+  same_failure_threshold: 3   # default: 3. N identical failures...
+  window_seconds: 300         # default: 300. ...within this window -> quarantine
+
+# Approval policy ("sudoers for the agent"). gate = require human approval;
+# auto_approve = pre-approved so they never prompt. Patterns include tool names
+# (read, grep), "bash:<cmd>", and "write:outside_cwd".
+gate:
+  - bash:git-push
+  - bash:rm
+  - write:outside_cwd
+auto_approve:
+  - read
+  - grep
+  - find
+  - ls
