@@ -1,0 +1,25 @@
+# Self-healing scraper/monitor. Scraper targets drift constantly (the
+# cookie-banner problem), so crash-loop quarantine is the whole point: fix and
+# retry, but stop after the same failure 4 times instead of looping on a dead
+# site and burning the budget.
+name: price-watch
+cwd: ~/work/scrapers
+prompt: |
+  Run ./scrape.ts. If it fails because the target site changed, read the error,
+  fix the selector, and retry. Append results to prices.jsonl.
+
+trigger:
+  type: cron
+  schedule: "0 */6 * * *"
+
+budget:
+  daily_usd: 3.00
+  on_exceed: pause
+
+restart:
+  policy: on-failure
+  max_consecutive: 5
+
+quarantine:
+  same_failure_threshold: 4
+  window_seconds: 1800

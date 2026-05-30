@@ -1,0 +1,27 @@
+# Cost-bounded overnight codemod worker. One worker per package keeps spend and
+# blast radius contained; pid bounds the cost and quarantines a stuck run.
+# Quality is still your job — every change lands as a reviewable draft PR.
+name: codemod-api-v2
+cwd: ~/work/monorepo/services/billing
+prompt: |
+  Migrate this package from the v1 to the v2 client API per MIGRATION.md.
+  Make the change, run THIS package's tests until green, open a DRAFT PR.
+  Touch no other package. Never push to main.
+
+model:
+  provider: anthropic
+  id: claude-opus-4-8
+  thinking: high
+
+trigger:
+  type: cron
+  schedule: "0 2 * * *"
+
+budget:
+  daily_usd: 25.00
+  on_exceed: quarantine     # still burning at the cap = broken, not slow
+
+gate:
+  - bash:git-push
+  - bash:rm
+  - bash:git-reset

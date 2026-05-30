@@ -1,0 +1,25 @@
+# Dependency updates that a human actually signs off on. Platforms now auto-open
+# AI fix PRs — but AI dependency PRs get "waved through" and are a real
+# supply-chain vector. pid forces a human gate and a full audit trail.
+name: governed-deps
+cwd: ~/work/myapp
+prompt: |
+  Find outdated or vulnerable dependencies. For each: read the release notes,
+  apply the update, fix any resulting build/test breakage, and open a DRAFT PR
+  explaining what changed and why it is safe.
+
+trigger:
+  type: cron
+  schedule: "0 7 * * 1"
+
+budget:
+  daily_usd: 10.00
+  on_exceed: pause
+
+gate:
+  - bash:git-push           # nothing leaves the machine without a human OK
+  - bash:npm-publish
+
+auto_approve:
+  - bash:npm-install
+  - bash:npm-test

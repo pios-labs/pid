@@ -1,0 +1,22 @@
+# Scheduled compliance evidence collector — "auditable autonomy". Report-only:
+# the gate blocks every write path, and pid records every action, cost, and
+# approval to the service's event log, which is an audit trail by construction.
+name: soc2-evidence
+cwd: ~/work/infra
+prompt: |
+  Collect this week's SOC2 evidence: check IAM policies, S3 bucket settings,
+  and CloudTrail config against controls.md. Write findings to
+  evidence/<date>.md. Report only — change nothing.
+
+trigger:
+  type: cron
+  schedule: "0 6 * * 1"
+
+budget:
+  weekly_usd: 8.00
+  on_exceed: notify
+
+gate:
+  - bash:aws-iam-put
+  - bash:aws-s3-put
+  - bash:terraform-apply

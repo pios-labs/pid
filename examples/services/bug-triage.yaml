@@ -1,0 +1,35 @@
+# Autonomous bug-triage with a hard cost ceiling — the exact pattern that, run
+# ungoverned, helped push a 35-engineer shop's monthly agent bill to $87k.
+name: bug-triage
+cwd: ~/work/myapp
+prompt: |
+  For each new issue labelled "bug": reproduce it, find the root cause, and
+  open a DRAFT PR with a minimal failing test plus a proposed fix.
+  Never push to main.
+
+model:
+  provider: anthropic
+  id: claude-sonnet-4-6
+  thinking: medium
+
+trigger:
+  type: cron
+  schedule: "*/30 * * * *"
+
+budget:
+  daily_usd: 15.00
+  weekly_usd: 60.00
+  on_exceed: pause          # stop before the next LLM call; resume next window
+  reset_tz: Europe/London
+
+restart:
+  policy: on-failure
+  max_consecutive: 3
+
+quarantine:
+  same_failure_threshold: 3
+  window_seconds: 600
+
+gate:
+  - bash:git-push
+  - bash:gh-pr-merge
