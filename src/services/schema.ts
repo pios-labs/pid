@@ -129,7 +129,7 @@ export interface KnownPiFlag {
  * Every RPC-relevant pi CLI flag and how pid exposes it — the in-code mirror of
  * the "Flag coverage" matrix in `pi-upstream-status.md`, keyed by canonical long
  * flag. `test/flag-coverage.test.ts` holds this consistent with `serviceSchema`,
- * `YAML_FLAG_CONFLICTS`, and `buildPiArgs`; the `/pi-upstream-sync` command diffs
+ * `YAML_FLAG_CONFLICTS`, and `buildPiArgs`; the `/refresh-pi` command diffs
  * pi's `args.ts` against it to catch new upstream flags.
  *
  * Source of truth for pi's flag set: `pi/packages/coding-agent/src/cli/args.ts`.
