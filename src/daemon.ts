@@ -1,10 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { listen, type Request, type Response } from "./protocol/socket.js";
-import { socketPath, stateDir } from "./util/paths.js";
 import { loadAllServices } from "./services/loader.js";
-import { Supervisor } from "./supervisor/index.js";
 import { StateStore } from "./state/store.js";
+import { Supervisor } from "./supervisor/index.js";
+import { socketPath, stateDir } from "./util/paths.js";
 
 export async function runDaemon(): Promise<void> {
 	await mkdir(stateDir(), { recursive: true });

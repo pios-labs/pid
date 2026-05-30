@@ -93,10 +93,29 @@ Why everything under `~/.pi/pid/` rather than scattered: keeps pid's footprint a
 ```yaml
 name: string                   # unique service name (required, matches filename stem)
 command: string                # default: "pi"
-args: [string]                 # default: ["--mode", "rpc", "--session-id", "<service-name>"]
 cwd: path                      # working directory; supports ~ expansion
 env: { KEY: value }            # extra environment variables
 prompt: string                 # initial prompt sent on (re)start; optional
+
+# Pi configuration — maps to pi CLI flags.
+# pid always injects: --mode rpc --session-id <service-name>
+# All fields optional; omit to use pi's defaults.
+model:
+  provider: string             # --provider (e.g., "anthropic", "zai", "openai")
+  id: string                   # --model (e.g., "glm-5.1", "zai/glm-5.1")
+  thinking: off | minimal | low | medium | high | xhigh   # --thinking
+  scoped: [string]             # --models (patterns for cycling)
+
+tools: [string] | false        # --tools <list> (universal allowlist) or --no-tools
+no_builtin_tools: boolean      # --no-builtin-tools (keeps extension tools)
+extensions: [string] | false   # -e <path>... (explicit list) or --no-extensions
+skills: [string] | false       # --skill <path>... (explicit list) or --no-skills
+context_files: false           # --no-context-files (skip AGENTS.md / CLAUDE.md)
+system_prompt: string          # --system-prompt (replaces pi's default)
+append_system_prompt: string   # --append-system-prompt (adds to pi's default)
+
+args: [string]                 # extra pi CLI flags not covered above (default: [])
+                               # conflicts with YAML fields above are rejected at load time
 
 trigger:
   type: manual | cron | file_watch | webhook

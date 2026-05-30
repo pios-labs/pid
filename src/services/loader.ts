@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { servicesDir } from "../util/paths.js";
-import { serviceSchema, type ServiceConfig } from "./schema.js";
+import { type ServiceConfig, serviceSchema, validateNoConflicts } from "./schema.js";
 
 export interface LoadResult {
 	services: ServiceConfig[];
@@ -32,6 +32,11 @@ export async function loadAllServices(dir: string = servicesDir()): Promise<Load
 			const stem = basename(file, extname(file));
 			if (parsed.name !== stem) {
 				errors.push({ file, error: `service name "${parsed.name}" does not match filename "${stem}"` });
+				continue;
+			}
+			const conflicts = validateNoConflicts(parsed);
+			if (conflicts.length > 0) {
+				errors.push({ file, error: conflicts.join("\n") });
 				continue;
 			}
 			services.push(parsed);

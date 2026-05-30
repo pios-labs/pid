@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { connect, sendCommand, type Request } from "./protocol/socket.js";
 import { runDaemon } from "./daemon.js";
+import { connect, type Request, sendCommand } from "./protocol/socket.js";
 
 const VERSION = "0.0.1";
 
 const program = new Command();
 
-program
-	.name("pid")
-	.description("Supervisor for pi agents")
-	.version(VERSION, "-v, --version");
+program.name("pid").description("Supervisor for pi agents").version(VERSION, "-v, --version");
 
 program
 	.command("daemon")

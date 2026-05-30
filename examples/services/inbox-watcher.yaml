@@ -4,6 +4,10 @@ prompt: |
   Check ~/inbox/ for new files. For each, process per AGENTS.md
   and move handled files to ~/inbox/processed/.
 
+model:
+  provider: zai
+  id: glm-5.1
+
 trigger:
   type: file_watch
   path: ~/inbox/

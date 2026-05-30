@@ -83,9 +83,7 @@ export class Supervisor {
 			try {
 				await this.start(name);
 			} catch (err) {
-				process.stderr.write(
-					`pid: failed to start ${name}: ${err instanceof Error ? err.message : String(err)}\n`,
-				);
+				process.stderr.write(`pid: failed to start ${name}: ${err instanceof Error ? err.message : String(err)}\n`);
 			}
 		}
 	}

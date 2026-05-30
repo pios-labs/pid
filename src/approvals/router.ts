@@ -11,7 +11,16 @@ import type { ServiceConfig } from "../services/schema.js";
 export interface ExtensionUiRequest {
 	type: "extension_ui_request";
 	id: string;
-	method: "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text";
+	method:
+		| "select"
+		| "confirm"
+		| "input"
+		| "editor"
+		| "notify"
+		| "setStatus"
+		| "setWidget"
+		| "setTitle"
+		| "set_editor_text";
 	[key: string]: unknown;
 }
 

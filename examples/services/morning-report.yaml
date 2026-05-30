@@ -4,6 +4,11 @@ prompt: |
   Summarize yesterday's git activity across all repos under ~/projects.
   Write the summary to ~/reports/$(date +%F).md.
 
+model:
+  provider: anthropic
+  id: claude-sonnet-4-5
+  thinking: medium
+
 trigger:
   type: cron
   schedule: "0 6 * * *"

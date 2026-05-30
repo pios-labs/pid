@@ -1,5 +1,5 @@
-import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Read a stream as JSONL, following pi's strict framing rules:

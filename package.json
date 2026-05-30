@@ -2,7 +2,14 @@
 	"name": "@pios-labs/pid",
 	"version": "0.0.1",
 	"description": "Supervisor for pi agents. Runs them as long-running services with cost governance, crash-loop quarantine, and a unified approval inbox.",
-	"keywords": ["pi", "agent", "supervisor", "daemon", "llm", "cost-budget"],
+	"keywords": [
+		"pi",
+		"agent",
+		"supervisor",
+		"daemon",
+		"llm",
+		"cost-budget"
+	],
 	"homepage": "https://pios.dev",
 	"bugs": "https://github.com/pios-labs/pid/issues",
 	"repository": {
@@ -17,7 +24,13 @@
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
-	"files": ["dist", "examples", "docs", "README.md", "LICENSE"],
+	"files": [
+		"dist",
+		"examples",
+		"docs",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
 		"clean": "rm -rf dist",

@@ -117,6 +117,10 @@ prompt: |
   write the summary to ~/inbox/processed/, and move
   the original to ~/inbox/done/.
 
+model:
+  provider: zai
+  id: glm-5.1
+
 trigger:
   type: file_watch
   path: ~/inbox/
@@ -135,6 +139,7 @@ Walking through it:
 - **`name`** must match the filename (`inbox-watcher.yaml` → `name: inbox-watcher`).
 - **`cwd`** is where the agent will be launched (so `~/` expansion and relative paths work right).
 - **`prompt`** is the initial instruction sent to the agent when it (re)starts. The agent then operates within whatever skills, AGENTS.md, and extensions pi finds in `cwd`.
+- **`model`** specifies which LLM to use. `provider` is the pi provider name; `id` is the model ID. You can also set `thinking` level and `scoped` model lists for cycling. If omitted, pi uses whatever model it resolves from its own settings. See [Model Selection](./model-selection.md) for the full reference, including dynamic model switching.
 - **`trigger`** says when to run. `file_watch` means "wake the agent up whenever a file appears in `~/inbox/`." Other options: `manual` (only when you run `pid start`), `cron` (a schedule like `"0 6 * * *"`).
 - **`budget`** is the safety net. `daily_usd: 1.00` means "if the agent has spent more than $1 in API costs today, pause it until midnight." `on_exceed` can be `pause`, `quarantine` (no auto-resume), or `notify` (just log a warning).
 - **`restart`** policy. `on-failure` restarts only if the agent exits non-zero. `max_consecutive: 3` means if it crashes three times in a row, give up.

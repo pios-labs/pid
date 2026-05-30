@@ -1,5 +1,5 @@
-import { createServer, type Server, type Socket, createConnection } from "node:net";
 import { unlink } from "node:fs/promises";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { socketPath } from "../util/paths.js";
 
 export interface Request {
