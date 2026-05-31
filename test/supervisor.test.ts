@@ -85,3 +85,39 @@ describe("Supervisor.start", () => {
 		expect((sup.status("nope") as ServiceRecord).state).toBe("failed");
 	});
 });
+
+describe("Supervisor.stop", () => {
+	it("stops via stdin-close, capturing pi's flushed tail and reaching stopped", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "graceful", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		await sup.start("graceful");
+		const res = await sup.stop("graceful");
+
+		expect(res.state).toBe("stopped");
+		const rec = sup.status("graceful") as ServiceRecord;
+		expect(rec.state).toBe("stopped");
+		expect(rec.pid).toBeUndefined();
+
+		// The "session_shutdown" line is only emitted by the fixture AFTER stdin closes; its presence
+		// proves we took the graceful stdin-close path and kept the reader attached through shutdown.
+		const logText = await readFile(join(tmp, "logs", "graceful.jsonl"), "utf8");
+		expect(logText).toContain('"session_shutdown"');
+	});
+
+	it("is idempotent when the service is not running", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "idle", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		const res = await sup.stop("idle");
+		expect(res.state).toBe("stopped");
+	});
+
+	it("throws on an unknown service", async () => {
+		const state = await StateStore.open();
+		const sup = new Supervisor({ state, services: { services: [], errors: [] } });
+		await expect(sup.stop("ghost")).rejects.toThrow(/unknown service/);
+	});
+});

@@ -11,6 +11,8 @@ import { expandTilde, logsDir } from "../util/paths.js";
 
 /** Grace period after `pi` settles before an already-exited child is treated as a startup failure. Mirrors pi's RpcClient.start(). */
 const SPAWN_SETTLE_MS = 100;
+/** How long to wait for pi to exit after closing its stdin before escalating to SIGTERM. See `Supervisor.stop()` for why stdin-close is the primary path. */
+const STOP_GRACE_MS = 5000;
 /** Grace period between SIGTERM and SIGKILL when reaping a child. Mirrors pi's RpcClient.stop(). */
 const TERMINATE_GRACE_MS = 1000;
 
@@ -39,6 +41,8 @@ interface RunningProcess {
 	child: ChildProcess;
 	log: WriteStream;
 	stderr: string;
+	/** Detaches the stdout JSONL reader; called before `log.end()` so a late end-flush can't write after close. */
+	detachReader: () => void;
 }
 
 /**
@@ -95,7 +99,7 @@ export class Supervisor {
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
-		const running: RunningProcess = { child, log, stderr: "" };
+		const running: RunningProcess = { child, log, stderr: "", detachReader: () => {} };
 		this.running.set(name, running);
 		record.pid = child.pid;
 
@@ -109,7 +113,7 @@ export class Supervisor {
 		// Consume the stdout event stream. Every event is appended raw to the per-service
 		// log; `onServiceEvent` is the (currently no-op) seam to the governor/crash/approval modules.
 		if (child.stdout) {
-			attachJsonlReader(
+			running.detachReader = attachJsonlReader(
 				child.stdout,
 				(event) => {
 					log.write(`${JSON.stringify(event)}\n`);
@@ -151,10 +155,75 @@ export class Supervisor {
 		return { name, state: record.state };
 	}
 
+	/**
+	 * Stop a running service by closing pi's stdin, escalating to signals only if pi ignores it.
+	 *
+	 * WHY stdin-close instead of SIGTERM (this is a deliberate, source-verified choice — do not
+	 * "simplify" it to a plain kill without re-reading the pi source referenced below):
+	 *
+	 * pi's rpc mode has three clean-shutdown triggers, and they are NOT equivalent. All three run
+	 * `runtimeHost.dispose()` (releasing extension resources — sockets, file handles), but they
+	 * differ in one respect that is decisive for pid:
+	 *
+	 *   - stdin EOF  -> `shutdown(0)`   -> dispose, FLUSH remaining stdout, exit 0
+	 *   - SIGTERM    -> `shutdown(143)` -> dispose, SKIP the flush,        exit 143
+	 *   - SIGHUP     -> `shutdown(129)` -> dispose, flush,                 exit 129
+	 *
+	 * The flush gate is literally `if (signal !== "SIGTERM") await flushRawStdout();` in pi's
+	 * `shutdown()`. So a SIGTERM stop can truncate pi's final buffered events before they reach us.
+	 * For pid those final events are the whole point — they carry the closing cost/usage totals the
+	 * cost governor and the on-disk log exist to capture. Losing the tail on every stop would
+	 * quietly corrupt our accounting. Closing stdin takes the no-signal path, so we get the flush
+	 * AND a clean exit 0 (an unambiguous "stopped on purpose" marker the crash detector can trust,
+	 * vs. 143 which looks like a signal death). We keep our stdout reader attached through shutdown
+	 * precisely so that flushed tail lands in the log.
+	 *
+	 * The cost: pi's OWN reference client (`RpcClient.stop()`) uses the SIGTERM path, so we are
+	 * deliberately diverging from pi's bundled supervisor. We judge that acceptable because that
+	 * client is ephemeral and discards late output, whereas pid's raison d'être is capturing it.
+	 * We still fall back to exactly the RpcClient teardown (SIGTERM -> SIGKILL) if pi ignores EOF.
+	 *
+	 * Note: `abort` ({"type":"abort"}) is NOT a shutdown — it only cancels the current agent turn
+	 * and pi keeps running. Our older docs wrongly described it as the graceful-cleanup mechanism.
+	 *
+	 * WATCH-POINT for future pi releases: if pi ever makes SIGTERM also flush (i.e. drops the
+	 * `signal !== "SIGTERM"` guard in `shutdown()`), the SIGTERM-only approach becomes equivalent
+	 * and strictly simpler — revisit this method then. Conversely, if pi ever stops treating stdin
+	 * EOF as a shutdown request (`onInputEnd`), this degrades to the 5s fallback on every stop;
+	 * watch for that regression.
+	 *
+	 * Verified against pi @ 3911d6f5 (2026-05-30), packages/coding-agent/src/modes/rpc:
+	 *   - rpc-mode.ts ~680-697  `shutdown()` + the `signal !== "SIGTERM"` flush gate
+	 *   - rpc-mode.ts ~362-373  SIGTERM/SIGHUP -> shutdown(143/129)
+	 *   - rpc-mode.ts ~756-758  `onInputEnd` -> `void shutdown()` (the stdin-EOF path, exit 0)
+	 *   - rpc-mode.ts ~423      `case "abort"` -> `session.abort()` (cancels turn, no exit)
+	 *   - rpc-client.ts ~143-165 `RpcClient.stop()` (the SIGTERM->SIGKILL path we keep as fallback)
+	 */
 	async stop(name: string): Promise<{ name: string; state: ServiceState }> {
 		const record = this.requireService(name);
-		// TODO: send abort over stdin, SIGTERM after grace, wait for exit
-		throw new Error(`stop: not implemented (would stop ${record.name})`);
+		const running = this.running.get(name);
+		if (!running) {
+			// Already stopped (or never started). Idempotent, like `systemctl stop` on a dead unit.
+			return { name, state: record.state };
+		}
+
+		record.state = "stopping";
+
+		// Graceful path: close pi's stdin -> pi takes the no-signal `shutdown(0)` branch (see above).
+		const { child } = running;
+		if (child.stdin && !child.stdin.destroyed) {
+			child.stdin.end();
+		}
+
+		// Wait for the graceful exit; `finalizeExit` handles state/cleanup on the exit event.
+		const exited = await this.waitForExit(child, STOP_GRACE_MS);
+		if (!exited) {
+			// pi ignored the stdin close (wedged, or a build without the EOF->shutdown path):
+			// fall back to pi's own RpcClient teardown — SIGTERM, then SIGKILL after a grace period.
+			await this.terminate(child);
+		}
+
+		return { name, state: record.state };
 	}
 
 	async restart(name: string): Promise<{ name: string; state: ServiceState }> {
@@ -210,6 +279,9 @@ export class Supervisor {
 		const running = this.running.get(name);
 		if (!running || running.child !== child) return;
 		this.running.delete(name);
+		// Detach the reader before ending the log: the stdout `end` event can flush a final
+		// buffered line concurrently with exit, and writing to an ended WriteStream throws.
+		running.detachReader();
 		running.log.end();
 
 		const record = this.services.get(name);
@@ -221,12 +293,33 @@ export class Supervisor {
 			record.state = "failed";
 			record.lastFailure = { at, signature: "proc:spawn_error" };
 		} else if (code === 0 || signal !== null) {
-			// Clean exit, or terminated by a signal (assumed our own SIGTERM until stop() refines this).
+			// Clean exit (graceful stop yields code 0), or terminated by a signal — our own
+			// SIGTERM/SIGKILL fallback in stop()/shutdown(). The crash detector will later
+			// distinguish a self-inflicted fatal signal from a deliberate teardown.
 			record.state = "stopped";
 		} else {
 			record.state = "failed";
 			record.lastFailure = { at, signature: `proc:exit_${code}` };
 		}
+	}
+
+	/** Resolve `true` if the child exits within `ms`, else `false`. Already-exited children resolve `true`. */
+	private waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
+		return new Promise((resolve) => {
+			if (child.exitCode !== null || child.signalCode !== null) {
+				resolve(true);
+				return;
+			}
+			const timer = setTimeout(() => {
+				child.off("exit", onExit);
+				resolve(false);
+			}, ms);
+			const onExit = () => {
+				clearTimeout(timer);
+				resolve(true);
+			};
+			child.once("exit", onExit);
+		});
 	}
 
 	/** SIGTERM a child, escalating to SIGKILL after a grace period. Mirrors pi's RpcClient.stop(). */

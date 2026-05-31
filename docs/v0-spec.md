@@ -169,7 +169,7 @@ The daemon listens on `~/.pi/pid/pid.sock`. CLI sends one JSON request per line;
 | `list` | All services with summary status |
 | `status <name>` | Detailed status for one service |
 | `start <name>` | Start a stopped service |
-| `stop <name>` | Stop a running service (sends `abort` then SIGTERM after grace) |
+| `stop <name>` | Stop a running service (closes pi's stdin for a clean `shutdown(0)` — dispose + final-output flush; SIGTERM→SIGKILL only if pi ignores it) |
 | `restart <name>` | Stop + start |
 | `enable <name>` | Mark service for auto-start on daemon boot |
 | `disable <name>` | Unmark; does not stop currently running |
