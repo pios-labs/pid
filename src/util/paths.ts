@@ -32,3 +32,14 @@ export function budgetDir(): string {
 export function socketPath(): string {
 	return process.env.PID_SOCKET ?? join(PID_HOME, "pid.sock");
 }
+
+/**
+ * Expand a leading `~` or `~/` to the user's home directory. Service files
+ * document `cwd` as supporting `~` expansion; pi itself does no such expansion
+ * on a spawned subprocess's cwd, so pid resolves it before spawning.
+ */
+export function expandTilde(p: string): string {
+	if (p === "~") return HOME;
+	if (p.startsWith("~/")) return join(HOME, p.slice(2));
+	return p;
+}
