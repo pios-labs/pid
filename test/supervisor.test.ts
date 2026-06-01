@@ -8,6 +8,7 @@ import { serviceSchema } from "../src/services/schema.js";
 import type { ServiceRecord } from "../src/supervisor/index.js";
 
 const fixturePath = fileURLToPath(new URL("fixtures/fake-pi.mjs", import.meta.url));
+const spenderPath = fileURLToPath(new URL("fixtures/fake-pi-spender.mjs", import.meta.url));
 
 // paths.ts reads PID_HOME at module-eval time, so set it before importing anything
 // that pulls it in, then load the modules dynamically.
@@ -22,6 +23,7 @@ beforeAll(async () => {
 	Supervisor = sup.Supervisor;
 	StateStore = state.StateStore;
 	await chmod(fixturePath, 0o755);
+	await chmod(spenderPath, 0o755);
 });
 
 afterAll(async () => {
@@ -119,5 +121,66 @@ describe("Supervisor.stop", () => {
 		const state = await StateStore.open();
 		const sup = new Supervisor({ state, services: { services: [], errors: [] } });
 		await expect(sup.stop("ghost")).rejects.toThrow(/unknown service/);
+	});
+});
+
+describe("Supervisor cost-governor integration", () => {
+	async function waitForState(sup: InstanceType<typeof Supervisor>, name: string, want: string, timeoutMs = 3000) {
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			if ((sup.status(name) as ServiceRecord).state === want) return;
+			await sleep(25);
+		}
+		throw new Error(`timed out waiting for ${name} to reach ${want} (got ${(sup.status(name) as ServiceRecord).state})`);
+	}
+
+	it("pauses a service that breaches its daily_usd cap", async () => {
+		const state = await StateStore.open();
+		// $1 message vs a $0.50 cap → breach on the first assistant message.
+		const config = serviceSchema.parse({ name: "spendy", command: spenderPath, budget: { daily_usd: 0.5 } });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await sup.init();
+
+		await sup.start("spendy");
+		await waitForState(sup, "spendy", "paused");
+
+		const rec = sup.status("spendy") as ServiceRecord;
+		expect(rec.state).toBe("paused");
+		expect(rec.pid).toBeUndefined(); // pause stops the process
+
+		await sup.shutdown();
+	});
+
+	it("refuses a bare start of a budget-paused service, but resume() works", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "held", command: spenderPath, budget: { daily_usd: 0.5 } });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await sup.init();
+
+		await sup.start("held");
+		await waitForState(sup, "held", "paused");
+
+		await expect(sup.start("held")).rejects.toThrow(/budget-paused/);
+
+		await sup.resume("held");
+		expect((sup.status("held") as ServiceRecord).state).toBe("running");
+
+		await sup.shutdown();
+	});
+
+	it("does not auto-resume a budget-paused service that the user manually stops", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "manual", command: spenderPath, budget: { daily_usd: 0.5 } });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await sup.init();
+
+		await sup.start("manual");
+		await waitForState(sup, "manual", "paused");
+
+		const res = await sup.stop("manual");
+		expect(res.state).toBe("stopped");
+		expect((sup.status("manual") as ServiceRecord).state).toBe("stopped");
+
+		await sup.shutdown();
 	});
 });

@@ -13,6 +13,7 @@ export async function runDaemon(): Promise<void> {
 	const state = await StateStore.open();
 	const services = await loadAllServices();
 	const supervisor = new Supervisor({ state, services });
+	await supervisor.init();
 
 	const server = await listen(socketPath(), async (req) => handle(req, supervisor));
 

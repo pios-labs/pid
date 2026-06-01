@@ -3,6 +3,8 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { BudgetStore } from "../budget/store.js";
+import { type BudgetActions, CostGovernor } from "../governor/cost.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
@@ -53,10 +55,12 @@ interface RunningProcess {
  * v0 scaffold: methods stub out, structure is in place. Real implementations land in
  * follow-up commits.
  */
-export class Supervisor {
+export class Supervisor implements BudgetActions {
 	private readonly state: StateStore;
 	private readonly services: Map<string, ServiceRecord>;
 	private readonly running: Map<string, RunningProcess>;
+	/** Built in init() only when a service declares a budget; undefined otherwise. */
+	private governor?: CostGovernor;
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
@@ -65,6 +69,22 @@ export class Supervisor {
 		for (const config of opts.services.services) {
 			this.services.set(config.name, { name: config.name, config, state: "stopped" });
 		}
+	}
+
+	/**
+	 * Open per-service budget stores and wire the cost governor. Call once after construction,
+	 * before startEnabled(). No-op when no service declares a budget.
+	 */
+	async init(): Promise<void> {
+		let governor: CostGovernor | undefined;
+		for (const record of this.services.values()) {
+			const budget = record.config.budget;
+			if (!budget) continue;
+			governor ??= new CostGovernor({ actions: this });
+			const store = await BudgetStore.open(record.name);
+			governor.register(record.name, budget, store);
+		}
+		this.governor = governor;
 	}
 
 	list(): ServiceRecord[] {
@@ -80,6 +100,11 @@ export class Supervisor {
 
 	async start(name: string): Promise<{ name: string; state: ServiceState }> {
 		const record = this.requireService(name);
+		if (record.state === "paused") {
+			// A budget-paused service must not be silently force-started (it would quietly run past
+			// its cap). Make the user choose explicitly via `pid resume`. See ADR 0002.
+			throw new Error(`service is budget-paused: ${name} — use \`pid resume ${name}\` to resume`);
+		}
 		if (this.running.has(name)) {
 			throw new Error(`service already running: ${name}`);
 		}
@@ -203,7 +228,13 @@ export class Supervisor {
 		const record = this.requireService(name);
 		const running = this.running.get(name);
 		if (!running) {
-			// Already stopped (or never started). Idempotent, like `systemctl stop` on a dead unit.
+			// Not running. A manual stop of a budget-paused service means "I'm taking control —
+			// don't auto-resume": transition it to stopped and cancel the governor's pending resume.
+			if (record.state === "paused") {
+				record.state = "stopped";
+				this.governor?.cancelResume(name);
+			}
+			// Otherwise idempotent, like `systemctl stop` on a dead unit.
 			return { name, state: record.state };
 		}
 
@@ -231,6 +262,26 @@ export class Supervisor {
 		return this.start(name);
 	}
 
+	/**
+	 * Cost-governor action: pause a service by stopping it and marking it `paused` (vs the
+	 * `stopped` that stop() leaves). The governor schedules the resume; resume() reverses it.
+	 */
+	async pause(name: string): Promise<void> {
+		await this.stop(name);
+		this.requireService(name).state = "paused";
+	}
+
+	/**
+	 * Cost-governor action: resume a paused service. Idempotent if already running. Clears the
+	 * `paused` state so start()'s guard allows the spawn.
+	 */
+	async resume(name: string): Promise<void> {
+		if (this.running.has(name)) return;
+		const record = this.requireService(name);
+		if (record.state === "paused") record.state = "stopped";
+		await this.start(name);
+	}
+
 	async enable(name: string): Promise<void> {
 		this.requireService(name);
 		await this.state.setEnabled(name, true);
@@ -246,6 +297,15 @@ export class Supervisor {
 		for (const name of enabled) {
 			if (!this.services.has(name)) continue;
 			try {
+				// A budgeted service that was over-cap before a restart stays held until its window
+				// resets; recover() re-arms the resume timer from the persisted budget state.
+				if (this.governor) {
+					const { stillPaused } = await this.governor.recover(name);
+					if (stillPaused) {
+						this.requireService(name).state = "paused";
+						continue;
+					}
+				}
 				await this.start(name);
 			} catch (err) {
 				process.stderr.write(`pid: failed to start ${name}: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -254,18 +314,20 @@ export class Supervisor {
 	}
 
 	async shutdown(): Promise<void> {
+		// Cancel any pending budget resume timers so none outlives the daemon.
+		this.governor?.dispose();
 		// Reap every running child so the daemon doesn't orphan pi processes.
-		// Graceful abort-first teardown lands with stop(); this is plain SIGTERM→SIGKILL.
+		// Graceful teardown lives in stop(); this is plain SIGTERM→SIGKILL.
 		await Promise.all([...this.running.values()].map((rp) => this.terminate(rp.child)));
 	}
 
 	/**
-	 * Single dispatch seam for parsed subprocess events. Events are already appended
-	 * to the raw log by the caller; routing to the cost governor, crash detector, and
-	 * approval router lands when those modules are built.
+	 * Single dispatch seam for parsed subprocess events. Events are already appended to the raw
+	 * log by the caller. The cost governor is the first consumer; the crash detector and approval
+	 * router will hang off here too. handleEvent is self-serializing — fire-and-forget.
 	 */
-	private onServiceEvent(_name: string, _event: unknown): void {
-		// TODO(governor/crash/approval): route events to the consumer modules.
+	private onServiceEvent(name: string, event: unknown): void {
+		void this.governor?.handleEvent(name, event);
 	}
 
 	/** Transition a service out of the running set on child exit or spawn error. */

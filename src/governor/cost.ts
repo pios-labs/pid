@@ -199,6 +199,31 @@ export class CostGovernor implements BudgetActions {
 		return { paused: t.paused, breachedCaps: t.lastBreach };
 	}
 
+	/**
+	 * Cancel a pending resume and clear the paused bookkeeping — e.g. the user manually stopped
+	 * a budget-paused service and we must not auto-resume it at the window reset.
+	 */
+	cancelResume(name: string): void {
+		const t = this.tracked.get(name);
+		if (!t) return;
+		if (t.resumeHandle !== null) {
+			this.timers.clear(t.resumeHandle);
+			t.resumeHandle = null;
+		}
+		t.paused = false;
+		t.lastBreach = null;
+	}
+
+	/** Cancel every pending resume timer (daemon shutdown), so no timer outlives the process. */
+	dispose(): void {
+		for (const t of this.tracked.values()) {
+			if (t.resumeHandle !== null) {
+				this.timers.clear(t.resumeHandle);
+				t.resumeHandle = null;
+			}
+		}
+	}
+
 	private async charge(name: string, t: Tracked, usage: ChargedUsage): Promise<void> {
 		const snap = await t.store.record({ costUsd: usage.costUsd, tokens: usage.tokens }, usage.at, t.caps.reset_tz);
 		// Already paused: keep the books accurate for any in-flight events, but don't re-act.
