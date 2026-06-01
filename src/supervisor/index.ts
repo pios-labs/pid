@@ -3,13 +3,16 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BudgetStore } from "../budget/store.js";
+import { BudgetStore, type OverrideState } from "../budget/store.js";
 import { type BudgetActions, CostGovernor } from "../governor/cost.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
 import { attachJsonlReader } from "../util/jsonl.js";
 import { expandTilde, logsDir } from "../util/paths.js";
+
+/** Per-dimension manual budget override (number = new ceiling, null = unlimited, absent = unchanged). */
+export type BudgetOverrideSpec = OverrideState;
 
 /** Grace period after `pi` settles before an already-exited child is treated as a startup failure. Mirrors pi's RpcClient.start(). */
 const SPAWN_SETTLE_MS = 100;
@@ -280,6 +283,22 @@ export class Supervisor implements BudgetActions {
 		const record = this.requireService(name);
 		if (record.state === "paused") record.state = "stopped";
 		await this.start(name);
+	}
+
+	/**
+	 * Manual budget override + resume (the `pid resume --daily/--weekly/--unlimited/--reset` path,
+	 * ADR 0002). Delegates to the governor, which sets the window-scoped override (or resets the
+	 * window), resumes via resume() above, and re-pauses if a surviving guardrail is still breached.
+	 */
+	async resumeWithOverride(
+		name: string,
+		spec: BudgetOverrideSpec,
+		reset = false,
+	): Promise<{ name: string; state: ServiceState }> {
+		const record = this.requireService(name);
+		if (!this.governor) throw new Error(`service has no budget: ${name}`);
+		await this.governor.override(name, spec, reset);
+		return { name, state: record.state };
 	}
 
 	async enable(name: string): Promise<void> {

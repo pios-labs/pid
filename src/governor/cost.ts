@@ -1,4 +1,4 @@
-import type { BudgetSnapshot, BudgetStore } from "../budget/store.js";
+import type { BudgetSnapshot, BudgetStore, OverrideState } from "../budget/store.js";
 import type { ServiceConfig } from "../services/schema.js";
 
 /**
@@ -103,6 +103,25 @@ export function extractUsage(event: unknown, fallbackNow: number): ChargedUsage 
 	};
 }
 
+/**
+ * Fold a window-scoped override into the configured caps to get the *effective* caps for breach
+ * checks (ADR 0002). Per dimension: a number replaces the cap, `null` lifts it (unlimited →
+ * undefined), absent leaves the configured value. Overrides are independent — lifting `daily_usd`
+ * leaves `weekly_usd` in force, so a daily lift still re-pauses when the weekly guardrail is hit.
+ */
+export function applyOverride(caps: BudgetConfig, override?: BudgetSnapshot["override"]): BudgetConfig {
+	if (!override) return caps;
+	const effective = { ...caps };
+	for (const key of ["daily_usd", "daily_tokens", "weekly_usd"] as const) {
+		if (key in override) {
+			const value = override[key];
+			if (value === null) delete effective[key];
+			else effective[key] = value;
+		}
+	}
+	return effective;
+}
+
 /** Which configured caps the snapshot has reached or exceeded. Empty = within budget. */
 export function evaluateBreach(snap: BudgetSnapshot, caps: BudgetConfig): BreachedCap[] {
 	const breached: BreachedCap[] = [];
@@ -183,7 +202,7 @@ export class CostGovernor implements BudgetActions {
 		const t = this.tracked.get(name);
 		if (!t) return { stillPaused: false };
 		const snap = await t.store.refresh(new Date(this.now()), t.caps.reset_tz);
-		const breached = evaluateBreach(snap, t.caps);
+		const breached = evaluateBreach(snap, applyOverride(t.caps, snap.override));
 		if (breached.length > 0 && t.caps.on_exceed === "pause") {
 			t.paused = true;
 			t.lastBreach = breached;
@@ -214,6 +233,48 @@ export class CostGovernor implements BudgetActions {
 		t.lastBreach = null;
 	}
 
+	/**
+	 * Apply a manual budget override and resume the service (the `pid resume` path, ADR 0002).
+	 *
+	 * `spec` is a per-dimension override (number = new ceiling, null = unlimited, absent = leave
+	 * as configured); `reset` instead zeroes the current windows and drops any override, putting
+	 * the service back under its configured caps with a clean slate. Either way the service is
+	 * un-paused and resumed — but only if the new effective caps clear the current spend, so a
+	 * resume that is still over an un-overridden guardrail (e.g. weekly) immediately re-pauses.
+	 */
+	async override(name: string, spec: OverrideState, reset = false): Promise<void> {
+		const t = this.tracked.get(name);
+		if (!t) throw new Error(`unknown service: ${name}`);
+
+		if (t.resumeHandle !== null) {
+			this.timers.clear(t.resumeHandle);
+			t.resumeHandle = null;
+		}
+
+		const at = new Date(this.now());
+		let snap: BudgetSnapshot;
+		if (reset) {
+			await t.store.reset(at, t.caps.reset_tz);
+			snap = await t.store.refresh(at, t.caps.reset_tz);
+		} else {
+			snap = await t.store.setOverride(spec, at, t.caps.reset_tz);
+		}
+
+		t.paused = false;
+		t.lastBreach = null;
+		await this.actions.resume(name);
+
+		// If spend already exceeds the new effective caps (e.g. weekly still breached after lifting
+		// daily), re-pause immediately so the surviving guardrail holds.
+		const breached = evaluateBreach(snap, applyOverride(t.caps, snap.override));
+		if (breached.length > 0 && t.caps.on_exceed === "pause") {
+			t.paused = true;
+			t.lastBreach = breached;
+			await this.actions.pause(name);
+			this.armResume(name, t, breached);
+		}
+	}
+
 	/** Cancel every pending resume timer (daemon shutdown), so no timer outlives the process. */
 	dispose(): void {
 		for (const t of this.tracked.values()) {
@@ -229,7 +290,7 @@ export class CostGovernor implements BudgetActions {
 		// Already paused: keep the books accurate for any in-flight events, but don't re-act.
 		if (t.paused) return;
 
-		const breached = evaluateBreach(snap, t.caps);
+		const breached = evaluateBreach(snap, applyOverride(t.caps, snap.override));
 		if (breached.length === 0) return;
 		t.lastBreach = breached;
 

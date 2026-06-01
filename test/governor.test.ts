@@ -9,6 +9,7 @@ let BudgetStore: typeof import("../src/budget/store.js").BudgetStore;
 let CostGovernor: typeof import("../src/governor/cost.js").CostGovernor;
 let extractUsage: typeof import("../src/governor/cost.js").extractUsage;
 let evaluateBreach: typeof import("../src/governor/cost.js").evaluateBreach;
+let applyOverride: typeof import("../src/governor/cost.js").applyOverride;
 
 const T0 = Date.parse("2026-06-01T10:00:00Z"); // a Monday
 
@@ -72,6 +73,7 @@ beforeAll(async () => {
 	CostGovernor = gov.CostGovernor;
 	extractUsage = gov.extractUsage;
 	evaluateBreach = gov.evaluateBreach;
+	applyOverride = gov.applyOverride;
 });
 
 afterAll(async () => {
@@ -241,5 +243,86 @@ describe("CostGovernor", () => {
 		const { stillPaused } = await gov.recover(name);
 		expect(stillPaused).toBe(false);
 		expect(gov.status(name)?.paused).toBe(false);
+	});
+});
+
+describe("applyOverride", () => {
+	const caps: BudgetConfig = { daily_usd: 2, weekly_usd: 10, daily_tokens: 1000, on_exceed: "pause", reset_tz: "UTC" };
+
+	it("replaces a dimension with a number and leaves the rest", () => {
+		expect(applyOverride(caps, { daily_usd: 5 })).toMatchObject({ daily_usd: 5, weekly_usd: 10, daily_tokens: 1000 });
+	});
+
+	it("lifts a dimension with null (removes the cap), leaving the others as guardrails", () => {
+		const eff = applyOverride(caps, { daily_usd: null });
+		expect(eff.daily_usd).toBeUndefined();
+		expect(eff.weekly_usd).toBe(10); // still guards
+	});
+
+	it("returns the caps unchanged when there is no override", () => {
+		expect(applyOverride(caps, undefined)).toBe(caps);
+	});
+});
+
+describe("CostGovernor.override", () => {
+	let h: ReturnType<typeof harness>;
+	let n = 0;
+	const svc = () => `ov-${n}`;
+
+	beforeEach(() => {
+		h = harness();
+		n += 1;
+	});
+
+	it("lifts the daily cap and resumes, then re-pauses on the surviving weekly guardrail", async () => {
+		const store = await BudgetStore.open(svc());
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		// $2 daily, $10 weekly. Spend $3 → both daily ($2) breached; weekly ($10) still has room.
+		gov.register(svc(), { daily_usd: 2, weekly_usd: 10, on_exceed: "pause", reset_tz: "UTC" }, store);
+		await gov.handleEvent(svc(), messageEnd(3.0, 10));
+		expect(h.calls.pause).toEqual([svc()]); // paused on daily
+
+		// Lift daily for the window → resumes (weekly still has headroom at $3 < $10).
+		await gov.override(svc(), { daily_usd: null });
+		expect(h.calls.resume).toEqual([svc()]);
+		expect(gov.status(svc())?.paused).toBe(false);
+
+		// Keep spending past the $10 weekly guardrail → re-pauses on weekly.
+		await gov.handleEvent(svc(), messageEnd(8.0, 10)); // total $11 >= $10 weekly
+		expect(gov.status(svc())?.paused).toBe(true);
+		expect(gov.status(svc())?.breachedCaps?.map((b) => b.cap)).toEqual(["weekly_usd"]);
+	});
+
+	it("immediately re-pauses if the override does not clear current spend", async () => {
+		const store = await BudgetStore.open(svc());
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		gov.register(svc(), { daily_usd: 2, on_exceed: "pause", reset_tz: "UTC" }, store);
+		await gov.handleEvent(svc(), messageEnd(5.0, 10)); // spent $5, paused
+
+		// Raise to $3 — still below the $5 already spent, so it re-pauses at once.
+		await gov.override(svc(), { daily_usd: 3 });
+		expect(gov.status(svc())?.paused).toBe(true);
+		expect(h.calls.resume).toEqual([svc()]); // it did resume first
+		expect(h.calls.pause).toHaveLength(2); // then re-paused
+	});
+
+	it("reset clears spend and resumes under the original caps", async () => {
+		const store = await BudgetStore.open(svc());
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		gov.register(svc(), { daily_usd: 2, on_exceed: "pause", reset_tz: "UTC" }, store);
+		await gov.handleEvent(svc(), messageEnd(5.0, 10)); // paused
+
+		await gov.override(svc(), {}, true); // --reset
+		expect(gov.status(svc())?.paused).toBe(false);
+		expect(h.calls.resume).toEqual([svc()]);
+
+		// Fresh window: a sub-cap charge does not pause.
+		await gov.handleEvent(svc(), messageEnd(1.0, 10));
+		expect(gov.status(svc())?.paused).toBe(false);
+	});
+
+	it("throws on an unknown service", async () => {
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		await expect(gov.override("nope", { daily_usd: null })).rejects.toThrow(/unknown service/);
 	});
 });

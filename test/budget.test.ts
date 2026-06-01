@@ -89,3 +89,47 @@ describe("BudgetStore", () => {
 		expect(snap.spentUsdWeek).toBe(0);
 	});
 });
+
+describe("BudgetStore override", () => {
+	it("merges per-dimension entries and surfaces them on the snapshot", async () => {
+		const store = await BudgetStore.open("ov-merge");
+		let snap = await store.setOverride({ daily_usd: 10 }, mon, tz);
+		expect(snap.override).toEqual({ daily_usd: 10 });
+
+		snap = await store.setOverride({ weekly_usd: null }, mon, tz); // merge, don't replace
+		expect(snap.override).toEqual({ daily_usd: 10, weekly_usd: null });
+	});
+
+	it("persists the override across reopen", async () => {
+		const first = await BudgetStore.open("ov-persist");
+		await first.setOverride({ daily_usd: null }, mon, tz);
+
+		const second = await BudgetStore.open("ov-persist");
+		const snap = await second.refresh(mon, tz);
+		expect(snap.override).toEqual({ daily_usd: null });
+	});
+
+	it("clears daily override entries when the daily window rolls, keeping the weekly one", async () => {
+		const store = await BudgetStore.open("ov-roll-day");
+		await store.setOverride({ daily_usd: 10, weekly_usd: 50 }, mon, tz);
+
+		const snap = await store.refresh(tue, tz); // next day, same week
+		expect(snap.override).toEqual({ weekly_usd: 50 });
+	});
+
+	it("clears the weekly override when the weekly window rolls", async () => {
+		const store = await BudgetStore.open("ov-roll-week");
+		await store.setOverride({ weekly_usd: 50 }, mon, tz);
+
+		const snap = await store.refresh(nextMon, tz);
+		expect(snap.override).toBeUndefined();
+	});
+
+	it("reset() drops any override", async () => {
+		const store = await BudgetStore.open("ov-reset");
+		await store.setOverride({ daily_usd: null }, mon, tz);
+		await store.reset(mon, tz);
+		const snap = await store.refresh(mon, tz);
+		expect(snap.override).toBeUndefined();
+	});
+});
