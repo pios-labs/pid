@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { listen, type Request, type Response } from "./protocol/socket.js";
 import { loadAllServices } from "./services/loader.js";
 import { StateStore } from "./state/store.js";
-import { Supervisor } from "./supervisor/index.js";
+import { type BudgetOverrideSpec, Supervisor } from "./supervisor/index.js";
 import { socketPath, stateDir } from "./util/paths.js";
 
 export async function runDaemon(): Promise<void> {
@@ -53,6 +53,8 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 			return supervisor.stop(req.name as string);
 		case "restart":
 			return supervisor.restart(req.name as string);
+		case "resume":
+			return supervisor.resumeWithOverride(req.name as string, req.spec as BudgetOverrideSpec, req.reset as boolean);
 		case "enable":
 			return supervisor.enable(req.name as string);
 		case "disable":

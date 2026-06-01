@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { runDaemon } from "./daemon.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
+import { parseResumeFlags, type ResumeFlags } from "./services/resume-args.js";
 
 const VERSION = "0.0.1";
 
@@ -50,6 +51,26 @@ program
 	.description("Restart a service")
 	.action(async (name: string) => {
 		await callDaemon({ cmd: "restart", name });
+	});
+
+program
+	.command("resume <name>")
+	.description("Resume a budget-paused service, optionally overriding its caps for the current window")
+	.option("--daily <usd|none>", 'set the daily USD cap this window, or "none" to lift it')
+	.option("--weekly <usd|none>", 'set the weekly USD cap this window, or "none" to lift it')
+	.option("--daily-tokens <n|none>", 'set the daily token cap this window, or "none" to lift it')
+	.option("--unlimited", "lift all caps for the current window")
+	.option("--reset", "zero the current budget windows and resume under the configured caps")
+	.action(async (name: string, opts: ResumeFlags) => {
+		let parsed: ReturnType<typeof parseResumeFlags>;
+		try {
+			parsed = parseResumeFlags(opts);
+		} catch (err) {
+			process.stderr.write(`pid: ${err instanceof Error ? err.message : String(err)}\n`);
+			process.exitCode = 1;
+			return;
+		}
+		await callDaemon({ cmd: "resume", name, spec: parsed.spec, reset: parsed.reset });
 	});
 
 program
@@ -153,4 +174,7 @@ async function callDaemon(req: Request): Promise<void> {
 	}
 }
 
-program.parseAsync(process.argv);
+// Guard so the parser/commands can be imported in tests without executing argv (mirrors daemon.ts).
+if (import.meta.url === `file://${process.argv[1]}`) {
+	program.parseAsync(process.argv);
+}

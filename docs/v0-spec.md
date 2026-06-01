@@ -171,6 +171,7 @@ The daemon listens on `~/.pi/pid/pid.sock`. CLI sends one JSON request per line;
 | `start <name>` | Start a stopped service |
 | `stop <name>` | Stop a running service (closes pi's stdin for a clean `shutdown(0)` — dispose + final-output flush; SIGTERM→SIGKILL only if pi ignores it) |
 | `restart <name>` | Stop + start |
+| `resume <name> [--daily <usd\|none>] [--weekly <usd\|none>] [--daily-tokens <n\|none>] [--unlimited] [--reset]` | Resume a budget-paused service with an optional window-scoped override. Each `--daily`/`--weekly`/`--daily-tokens` sets that cap's ceiling for the current window (a number) or lifts it (`none`); other caps keep guarding. `--unlimited` lifts all caps this window; `--reset` zeroes the current windows under the original caps. No flags = resume under existing caps (re-pauses at once if still over). A bare `start` on a budget-paused service is refused — use `resume`. |
 | `enable <name>` | Mark service for auto-start on daemon boot |
 | `disable <name>` | Unmark; does not stop currently running |
 | `logs <name> [-f] [--turns\|--raw]` | View/stream per-service logs |
