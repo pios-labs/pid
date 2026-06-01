@@ -59,6 +59,12 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 			return supervisor.enable(req.name as string);
 		case "disable":
 			return supervisor.disable(req.name as string);
+		case "quarantine":
+			// quarantine() is the CrashActions action (returns void); compose a status for CLI feedback.
+			await supervisor.quarantine(req.name as string);
+			return supervisor.status(req.name as string);
+		case "unquarantine":
+			return supervisor.unquarantine(req.name as string);
 		case "logs":
 		case "tail":
 		case "reload":
@@ -67,8 +73,6 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 		case "deny":
 		case "budget_show":
 		case "budget_reset":
-		case "quarantine":
-		case "unquarantine":
 			throw new Error(`not implemented: ${cmd}`);
 		default:
 			throw new Error(`unknown command: ${cmd}`);
