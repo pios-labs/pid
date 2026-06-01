@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidTimeZone } from "../util/time.js";
 
 const triggerSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("manual") }),
@@ -14,8 +15,14 @@ const budgetSchema = z.object({
 	daily_usd: z.number().positive().optional(),
 	weekly_usd: z.number().positive().optional(),
 	daily_tokens: z.number().int().positive().optional(),
-	on_exceed: z.enum(["pause", "quarantine", "notify"]).default("pause"),
-	reset_tz: z.string().default("UTC"),
+	// `quarantine` is deferred (it would co-own the quarantined state with the unbuilt
+	// crash detector) — see ADR 0002. v0 enforces pause (default) and observe-only notify.
+	on_exceed: z.enum(["pause", "notify"]).default("pause"),
+	// Windows are calendar-aligned in this zone; reject typo'd zones at load (ADR 0002 / Q3).
+	reset_tz: z
+		.string()
+		.default("UTC")
+		.refine(isValidTimeZone, { message: "reset_tz must be a valid IANA time zone (e.g. UTC, Europe/London)" }),
 });
 
 const restartSchema = z.object({

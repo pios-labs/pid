@@ -19,7 +19,7 @@ trigger:
 
 budget:
   daily_usd: 25.00
-  on_exceed: quarantine     # still burning at the cap = broken, not slow
+  on_exceed: pause          # hard stop at the cap until the next budget window
 
 gate:
   - bash:git-push

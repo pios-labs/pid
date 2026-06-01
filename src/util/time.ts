@@ -18,13 +18,19 @@ export interface Window {
 	end: Date;
 }
 
-/** Throw if `tz` is not a valid IANA time zone. Cheap fail-fast for config load. */
-export function assertValidTimeZone(tz: string): void {
+/** Whether `tz` is a valid IANA time zone. */
+export function isValidTimeZone(tz: string): boolean {
 	try {
 		new Intl.DateTimeFormat("en-US", { timeZone: tz });
+		return true;
 	} catch {
-		throw new Error(`invalid time zone: ${tz}`);
+		return false;
 	}
+}
+
+/** Throw if `tz` is not a valid IANA time zone. Cheap fail-fast for config load. */
+export function assertValidTimeZone(tz: string): void {
+	if (!isValidTimeZone(tz)) throw new Error(`invalid time zone: ${tz}`);
 }
 
 /** Offset of `tz` from UTC, in ms, at instant `date` (positive = ahead of UTC). */

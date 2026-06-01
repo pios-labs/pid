@@ -79,6 +79,32 @@ describe("service schema", () => {
 	});
 });
 
+describe("budget config", () => {
+	it("defaults on_exceed to pause and reset_tz to UTC", () => {
+		const parsed = serviceSchema.parse({ name: "budgeted", budget: { daily_usd: 5 } });
+		expect(parsed.budget?.on_exceed).toBe("pause");
+		expect(parsed.budget?.reset_tz).toBe("UTC");
+	});
+
+	it("accepts notify and a valid IANA reset_tz", () => {
+		const parsed = serviceSchema.parse({
+			name: "observed",
+			budget: { weekly_usd: 50, daily_tokens: 1_000_000, on_exceed: "notify", reset_tz: "Europe/London" },
+		});
+		expect(parsed.budget?.on_exceed).toBe("notify");
+		expect(parsed.budget?.reset_tz).toBe("Europe/London");
+		expect(parsed.budget?.daily_tokens).toBe(1_000_000);
+	});
+
+	it("rejects the deferred quarantine action (ADR 0002)", () => {
+		expect(() => serviceSchema.parse({ name: "q", budget: { daily_usd: 5, on_exceed: "quarantine" } })).toThrow();
+	});
+
+	it("rejects an invalid reset_tz", () => {
+		expect(() => serviceSchema.parse({ name: "badtz", budget: { daily_usd: 5, reset_tz: "Not/AZone" } })).toThrow();
+	});
+});
+
 describe("conflict detection", () => {
 	it("detects --tools in args when tools field is set", () => {
 		const config = serviceSchema.parse({

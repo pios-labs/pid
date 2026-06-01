@@ -89,7 +89,7 @@ budget:
   daily_usd: 20.00            # per-day dollar cap
   weekly_usd: 80.00           # per-week dollar cap
   daily_tokens: 5000000       # per-day token cap (any cap may be used alone)
-  on_exceed: pause            # default: pause. pause | quarantine | notify
+  on_exceed: pause            # default: pause. pause | notify
   reset_tz: Europe/London     # default: UTC. timezone the windows reset in
 
 restart:
