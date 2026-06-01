@@ -5,9 +5,12 @@ import { stateDir } from "../util/paths.js";
 interface PersistedState {
 	version: 1;
 	enabled: string[];
+	/** Services held in crash-loop quarantine (ADR 0003). Mirrors `enabled`: a sorted name-list,
+	 *  the durable source of truth for the terminal quarantine bit, re-held on boot. */
+	quarantined: string[];
 }
 
-const DEFAULT_STATE: PersistedState = { version: 1, enabled: [] };
+const DEFAULT_STATE: PersistedState = { version: 1, enabled: [], quarantined: [] };
 
 export class StateStore {
 	private constructor(
@@ -20,7 +23,9 @@ export class StateStore {
 		let state: PersistedState;
 		try {
 			const text = await readFile(path, "utf8");
-			state = JSON.parse(text) as PersistedState;
+			// Merge over defaults so a state.json written before a field existed (e.g. pre-quarantine)
+			// loads with that field defaulted rather than undefined.
+			state = { ...DEFAULT_STATE, ...(JSON.parse(text) as Partial<PersistedState>) };
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
@@ -41,6 +46,18 @@ export class StateStore {
 		if (enabled) set.add(name);
 		else set.delete(name);
 		this.state = { ...this.state, enabled: [...set].sort() };
+		await this.persist();
+	}
+
+	async getQuarantined(): Promise<string[]> {
+		return [...this.state.quarantined];
+	}
+
+	async setQuarantined(name: string, quarantined: boolean): Promise<void> {
+		const set = new Set(this.state.quarantined);
+		if (quarantined) set.add(name);
+		else set.delete(name);
+		this.state = { ...this.state, quarantined: [...set].sort() };
 		await this.persist();
 	}
 

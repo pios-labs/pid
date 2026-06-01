@@ -9,6 +9,7 @@ import type { ServiceRecord } from "../src/supervisor/index.js";
 
 const fixturePath = fileURLToPath(new URL("fixtures/fake-pi.mjs", import.meta.url));
 const spenderPath = fileURLToPath(new URL("fixtures/fake-pi-spender.mjs", import.meta.url));
+const crasherPath = fileURLToPath(new URL("fixtures/fake-pi-crasher.mjs", import.meta.url));
 
 // paths.ts reads PID_HOME at module-eval time, so set it before importing anything
 // that pulls it in, then load the modules dynamically.
@@ -24,6 +25,7 @@ beforeAll(async () => {
 	StateStore = state.StateStore;
 	await chmod(fixturePath, 0o755);
 	await chmod(spenderPath, 0o755);
+	await chmod(crasherPath, 0o755);
 });
 
 afterAll(async () => {
@@ -182,5 +184,84 @@ describe("Supervisor cost-governor integration", () => {
 		expect((sup.status("manual") as ServiceRecord).state).toBe("stopped");
 
 		await sup.shutdown();
+	});
+});
+
+describe("Supervisor crash-detector integration", () => {
+	async function waitForState(sup: InstanceType<typeof Supervisor>, name: string, want: string, timeoutMs = 3000) {
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			if ((sup.status(name) as ServiceRecord).state === want) return;
+			await sleep(25);
+		}
+		throw new Error(`timed out waiting for ${name} to reach ${want} (got ${(sup.status(name) as ServiceRecord).state})`);
+	}
+
+	it("quarantines a service that repeats the same failure past the threshold", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "crashy", command: crasherPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await sup.init();
+
+		await sup.start("crashy");
+		await waitForState(sup, "crashy", "quarantined");
+
+		const rec = sup.status("crashy") as ServiceRecord;
+		expect(rec.state).toBe("quarantined");
+		expect(rec.pid).toBeUndefined(); // quarantine gracefully stops the process
+		expect(rec.lastFailure?.signature).toBe("tool:bash:error"); // the "why" is surfaced
+
+		// The terminal bit is persisted (ADR 0003) so a restart keeps holding it.
+		expect(await state.getQuarantined()).toContain("crashy");
+
+		await sup.shutdown();
+	});
+
+	it("refuses a bare start of a quarantined service; unquarantine clears it and allows start", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "quar-refuse", command: crasherPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await sup.init();
+
+		await sup.start("quar-refuse");
+		await waitForState(sup, "quar-refuse", "quarantined");
+
+		await expect(sup.start("quar-refuse")).rejects.toThrow(/quarantined/);
+
+		const res = await sup.unquarantine("quar-refuse");
+		expect(res.state).toBe("stopped");
+		expect(await state.getQuarantined()).not.toContain("quar-refuse");
+
+		// Cleared → can be started again (it will re-quarantine, but the point is start() is allowed).
+		await sup.start("quar-refuse");
+		expect((sup.status("quar-refuse") as ServiceRecord).state).toBe("running");
+
+		await sup.shutdown();
+	});
+
+	it("re-holds a quarantined service across a daemon restart and never auto-starts it", async () => {
+		// First daemon: enable + start, let it quarantine, persist.
+		const state1 = await StateStore.open();
+		const config = serviceSchema.parse({ name: "quar-persist", command: crasherPath });
+		const sup1 = new Supervisor({ state: state1, services: { services: [config], errors: [] } });
+		await sup1.init();
+		await sup1.enable("quar-persist");
+		await sup1.start("quar-persist");
+		await waitForState(sup1, "quar-persist", "quarantined");
+		await sup1.shutdown();
+
+		// Second daemon: fresh state load + fresh supervisor over the same persisted state.
+		const state2 = await StateStore.open();
+		const sup2 = new Supervisor({ state: state2, services: { services: [config], errors: [] } });
+		await sup2.init();
+		// init() restored the terminal bit from the persisted set...
+		expect((sup2.status("quar-persist") as ServiceRecord).state).toBe("quarantined");
+		// ...and startEnabled must not start it back into the loop despite it being enabled.
+		await sup2.startEnabled();
+		expect((sup2.status("quar-persist") as ServiceRecord).state).toBe("quarantined");
+
+		await sup2.unquarantine("quar-persist");
+		await sup2.disable("quar-persist");
+		await sup2.shutdown();
 	});
 });

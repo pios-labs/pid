@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BudgetStore, type OverrideState } from "../budget/store.js";
 import { type BudgetActions, CostGovernor } from "../governor/cost.js";
+import { type CrashActions, CrashDetector } from "../governor/crash.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
@@ -58,19 +59,23 @@ interface RunningProcess {
  * v0 scaffold: methods stub out, structure is in place. Real implementations land in
  * follow-up commits.
  */
-export class Supervisor implements BudgetActions {
+export class Supervisor implements BudgetActions, CrashActions {
 	private readonly state: StateStore;
 	private readonly services: Map<string, ServiceRecord>;
 	private readonly running: Map<string, RunningProcess>;
 	/** Built in init() only when a service declares a budget; undefined otherwise. */
 	private governor?: CostGovernor;
+	/** Always present: crash detection is core supervision, on for every service (ADR 0003). */
+	private readonly crash: CrashDetector;
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
 		this.services = new Map();
 		this.running = new Map();
+		this.crash = new CrashDetector({ actions: this });
 		for (const config of opts.services.services) {
 			this.services.set(config.name, { name: config.name, config, state: "stopped" });
+			this.crash.register(config.name, config.quarantine);
 		}
 	}
 
@@ -88,6 +93,15 @@ export class Supervisor implements BudgetActions {
 			governor.register(record.name, budget, store);
 		}
 		this.governor = governor;
+
+		// Re-hold services quarantined before this daemon started (ADR 0003): the persisted
+		// quarantined[] set is the durable source of truth. The in-session failure window is
+		// intentionally not persisted, so we restore only the terminal bit — startEnabled then
+		// skips these, and start()'s guard refuses a manual start until `pid unquarantine`.
+		for (const name of await this.state.getQuarantined()) {
+			const record = this.services.get(name);
+			if (record) record.state = "quarantined";
+		}
 	}
 
 	list(): ServiceRecord[] {
@@ -107,6 +121,11 @@ export class Supervisor implements BudgetActions {
 			// A budget-paused service must not be silently force-started (it would quietly run past
 			// its cap). Make the user choose explicitly via `pid resume`. See ADR 0002.
 			throw new Error(`service is budget-paused: ${name} — use \`pid resume ${name}\` to resume`);
+		}
+		if (record.state === "quarantined") {
+			// A crash-looping service is held until a human confirms the fault is fixed; never
+			// auto-/force-start it back into the loop. See ADR 0003.
+			throw new Error(`service is quarantined (crash loop): ${name} — use \`pid unquarantine ${name}\` to clear`);
 		}
 		if (this.running.has(name)) {
 			throw new Error(`service already running: ${name}`);
@@ -301,6 +320,34 @@ export class Supervisor implements BudgetActions {
 		return { name, state: record.state };
 	}
 
+	/**
+	 * Crash-detector action: quarantine a service after a crash loop (ADR 0003). Like pause() it
+	 * gracefully stops the child (so the closing events still flush), but the state is *terminal* —
+	 * no auto-resume — and it is persisted to the quarantined[] set so a daemon restart keeps
+	 * holding it. The triggering failure signature is surfaced on status as the "why".
+	 */
+	async quarantine(name: string): Promise<void> {
+		await this.stop(name);
+		const record = this.requireService(name);
+		record.state = "quarantined";
+		const failure = this.crash.status(name)?.lastFailure;
+		if (failure) record.lastFailure = failure;
+		await this.state.setQuarantined(name, true);
+	}
+
+	/**
+	 * Clear a quarantine (the `pid unquarantine` path): drop the persisted bit, reset the detector's
+	 * failure history, and return the service to `stopped` so it can be started again. Idempotent on
+	 * a service that isn't quarantined.
+	 */
+	async unquarantine(name: string): Promise<{ name: string; state: ServiceState }> {
+		const record = this.requireService(name);
+		if (record.state === "quarantined") record.state = "stopped";
+		this.crash.clear(name);
+		await this.state.setQuarantined(name, false);
+		return { name, state: record.state };
+	}
+
 	async enable(name: string): Promise<void> {
 		this.requireService(name);
 		await this.state.setEnabled(name, true);
@@ -315,6 +362,9 @@ export class Supervisor implements BudgetActions {
 		const enabled = await this.state.getEnabled();
 		for (const name of enabled) {
 			if (!this.services.has(name)) continue;
+			// A quarantined service stays held across restarts (ADR 0003) — never auto-start it
+			// back into the crash loop. init() already restored its state from the persisted set.
+			if (this.requireService(name).state === "quarantined") continue;
 			try {
 				// A budgeted service that was over-cap before a restart stays held until its window
 				// resets; recover() re-arms the resume timer from the persisted budget state.
@@ -342,11 +392,13 @@ export class Supervisor implements BudgetActions {
 
 	/**
 	 * Single dispatch seam for parsed subprocess events. Events are already appended to the raw
-	 * log by the caller. The cost governor is the first consumer; the crash detector and approval
-	 * router will hang off here too. handleEvent is self-serializing — fire-and-forget.
+	 * log by the caller. The cost governor (budgeted services only) and the crash detector (all
+	 * services) consume here; the approval router will hang off too. Both handleEvent methods are
+	 * self-serializing — fire-and-forget.
 	 */
 	private onServiceEvent(name: string, event: unknown): void {
 		void this.governor?.handleEvent(name, event);
+		void this.crash.handleEvent(name, event);
 	}
 
 	/** Transition a service out of the running set on child exit or spawn error. */
