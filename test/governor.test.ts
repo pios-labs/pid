@@ -2,13 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { BudgetConfig, TimerService } from "../src/governor/index.js";
+import type { BudgetConfig, TimerService } from "../src/governor/cost.js";
 
 let tmp: string;
 let BudgetStore: typeof import("../src/budget/store.js").BudgetStore;
-let CostGovernor: typeof import("../src/governor/index.js").CostGovernor;
-let extractUsage: typeof import("../src/governor/index.js").extractUsage;
-let evaluateBreach: typeof import("../src/governor/index.js").evaluateBreach;
+let CostGovernor: typeof import("../src/governor/cost.js").CostGovernor;
+let extractUsage: typeof import("../src/governor/cost.js").extractUsage;
+let evaluateBreach: typeof import("../src/governor/cost.js").evaluateBreach;
 
 const T0 = Date.parse("2026-06-01T10:00:00Z"); // a Monday
 
@@ -67,7 +67,7 @@ const pauseCaps: BudgetConfig = { daily_usd: 1.0, on_exceed: "pause", reset_tz: 
 beforeAll(async () => {
 	tmp = await mkdtemp(join(tmpdir(), "pid-gov-"));
 	process.env.PID_HOME = tmp;
-	const [store, gov] = await Promise.all([import("../src/budget/store.js"), import("../src/governor/index.js")]);
+	const [store, gov] = await Promise.all([import("../src/budget/store.js"), import("../src/governor/cost.js")]);
 	BudgetStore = store.BudgetStore;
 	CostGovernor = gov.CostGovernor;
 	extractUsage = gov.extractUsage;
