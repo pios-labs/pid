@@ -10,6 +10,7 @@ import type { ServiceRecord } from "../src/supervisor/index.js";
 const fixturePath = fileURLToPath(new URL("fixtures/fake-pi.mjs", import.meta.url));
 const spenderPath = fileURLToPath(new URL("fixtures/fake-pi-spender.mjs", import.meta.url));
 const crasherPath = fileURLToPath(new URL("fixtures/fake-pi-crasher.mjs", import.meta.url));
+const echoPath = fileURLToPath(new URL("fixtures/fake-pi-echo.mjs", import.meta.url));
 
 // paths.ts reads PID_HOME at module-eval time, so set it before importing anything
 // that pulls it in, then load the modules dynamically.
@@ -26,6 +27,7 @@ beforeAll(async () => {
 	await chmod(fixturePath, 0o755);
 	await chmod(spenderPath, 0o755);
 	await chmod(crasherPath, 0o755);
+	await chmod(echoPath, 0o755);
 });
 
 afterAll(async () => {
@@ -263,5 +265,47 @@ describe("Supervisor crash-detector integration", () => {
 		await sup2.unquarantine("quar-persist");
 		await sup2.disable("quar-persist");
 		await sup2.shutdown();
+	});
+});
+
+describe("Supervisor.send", () => {
+	it("writes a framed JSONL line that reaches pi's stdin", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "echo", command: echoPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		await sup.start("echo");
+		const reply = { type: "extension_ui_response", id: "req_1", confirmed: true };
+		await sup.send("echo", reply);
+
+		// The echo fixture parses the line off its stdin and re-emits it; its appearance in the
+		// log proves the message was framed correctly and delivered over stdin end-to-end.
+		const logText = await waitForLog(join(tmp, "logs", "echo.jsonl"), "stdin_echo");
+		expect(logText).toContain('"received":{"type":"extension_ui_response","id":"req_1","confirmed":true}');
+
+		await sup.shutdown();
+	});
+
+	it("throws on an unknown service", async () => {
+		const state = await StateStore.open();
+		const sup = new Supervisor({ state, services: { services: [], errors: [] } });
+		await expect(sup.send("ghost", { type: "x" })).rejects.toThrow(/unknown service/);
+	});
+
+	it("rejects when the service is not running", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "idle-send", command: echoPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+		await expect(sup.send("idle-send", { type: "x" })).rejects.toThrow(/not running/);
+	});
+
+	it("rejects after the service has stopped (stdin closed)", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "stopped-send", command: echoPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		await sup.start("stopped-send");
+		await sup.stop("stopped-send");
+		await expect(sup.send("stopped-send", { type: "x" })).rejects.toThrow(/not running|not writable/);
 	});
 });

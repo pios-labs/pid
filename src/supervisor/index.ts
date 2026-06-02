@@ -9,7 +9,7 @@ import { type CrashActions, CrashDetector } from "../governor/crash.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
-import { attachJsonlReader } from "../util/jsonl.js";
+import { attachJsonlReader, serializeJsonLine } from "../util/jsonl.js";
 import { expandTilde, logsDir } from "../util/paths.js";
 
 /** Per-dimension manual budget override (number = new ceiling, null = unlimited, absent = unchanged). */
@@ -155,6 +155,15 @@ export class Supervisor implements BudgetActions, CrashActions {
 			const text = chunk.toString();
 			running.stderr += text;
 			process.stderr.write(`[${name}] ${text}`);
+		});
+
+		// Swallow stdin errors so a broken pipe (pi exits mid-write) can't crash the daemon as an
+		// unhandled 'error' event. Mirrors pi's own RpcClient, which attaches this guard at spawn.
+		// `send()` surfaces the failure to its caller via the write callback; this only logs and is
+		// sidecar-guarded so a stale handler from a prior spawn stays quiet.
+		child.stdin?.on("error", (err) => {
+			if (this.running.get(name)?.child !== child) return;
+			process.stderr.write(`[${name}] stdin error: ${err.message}\n`);
 		});
 
 		// Consume the stdout event stream. Every event is appended raw to the per-service
@@ -388,6 +397,36 @@ export class Supervisor implements BudgetActions, CrashActions {
 		// Reap every running child so the daemon doesn't orphan pi processes.
 		// Graceful teardown lives in stop(); this is plain SIGTERM→SIGKILL.
 		await Promise.all([...this.running.values()].map((rp) => this.terminate(rp.child)));
+	}
+
+	/**
+	 * Write one JSONL message to a running service's stdin — the host→pi direction, counterpart to
+	 * the stdout event reader. Frames with `serializeJsonLine` (LF-only), exactly the framing pi's
+	 * `RpcClient` uses to talk to a pi subprocess. The approval router is the first consumer: it
+	 * replies to an `extension_ui_request` with an `extension_ui_response`.
+	 *
+	 * Resolves once the line is accepted by the pipe; rejects if the service isn't running or the
+	 * write fails (e.g. pi closed stdin / exited mid-reply). The guards mirror pi's own `send()`:
+	 * a dead or exiting child, or an unwritable stdin, is a surfaced error, not a silent no-op — the
+	 * router needs to know a reply didn't land. (`stop()` ends stdin to trigger pi's shutdown, so a
+	 * send racing a stop legitimately rejects here.)
+	 */
+	async send(name: string, message: unknown): Promise<void> {
+		this.requireService(name);
+		const running = this.running.get(name);
+		if (!running) throw new Error(`cannot send to ${name}: service not running`);
+
+		const { stdin } = running.child;
+		if (!stdin || stdin.destroyed || !stdin.writable || running.child.exitCode !== null) {
+			throw new Error(`cannot send to ${name}: stdin is not writable`);
+		}
+
+		await new Promise<void>((resolve, reject) => {
+			stdin.write(serializeJsonLine(message), (err) => {
+				if (err) reject(err);
+				else resolve();
+			});
+		});
 	}
 
 	/**

@@ -2,6 +2,20 @@ import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
 /**
+ * Serialize one value as a strict JSONL record (mirrors pi's `serializeJsonLine`).
+ *
+ * Framing is LF-only: a single trailing `\n`, and nothing else added. `JSON.stringify`
+ * escapes any `\n` inside string values to `\\n`, so the payload can never inject a false
+ * line break; conversely U+2028 / U+2029 are left literal (they are valid inside JSON
+ * strings) — safe because both pi and `attachJsonlReader` below split on `\n` only.
+ *
+ * This is the host→pi write counterpart to the pi→host `attachJsonlReader`.
+ */
+export function serializeJsonLine(value: unknown): string {
+	return `${JSON.stringify(value)}\n`;
+}
+
+/**
  * Read a stream as JSONL, following pi's strict framing rules:
  * - split on \n only
  * - accept and strip a trailing \r
