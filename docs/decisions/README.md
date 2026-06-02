@@ -22,3 +22,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0001](0001-supervisor-stop-teardown.md) — Supervisor.stop() teardown: stdin-close over SIGTERM — **Accepted**
 - [0002](0002-cost-governor.md) — Cost governor: budget model, pause semantics, windows — **Accepted**
 - [0003](0003-crash-loop-detector.md) — Crash-loop detector: failure signatures, quarantine, scope — **Accepted**
+- [0004](0004-approval-router.md) — Approval router: policy model, matching semantics, host-reply path — **Accepted**
