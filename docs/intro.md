@@ -207,21 +207,18 @@ This is the difference between "your agent restarts forever burning tokens" and 
 
 ### 3. The approval inbox
 
-You declare which actions need human approval; `pid` routes the requests to one place.
+You block-list the handful of actions you want a glance at; `pid` routes those requests to one place and lets everything else run.
 
 ```yaml
+# the targeted block-list — the destructive few you don't want happening unseen
 gate:
   - bash:rm
   - bash:git-push
-  - write:outside_cwd
-auto_approve:
-  - read
-  - grep
-  - find
-  - ls
 ```
 
 This builds on a feature pi already has: extensions can emit `extension_ui_request` events to ask the user a question ("⚠️ Allow `rm -rf ./tmp`?"). When you're sitting in the TUI, pi pops a dialog. When the agent is headless, the request just sits there waiting for somebody to answer.
+
+One thing to be clear about up front: **`pid` answers the dialogs an extension raises — it does not intercept tool calls itself.** It can't reach into pi and veto `rm`; what it can do is be the human at the dialog a gating extension puts up. So `gate` decides *how pid answers those prompts*, not *which tools may run*. The wall around "agent does something genuinely insane" is process isolation (run it in a sandboxed `cwd`, as a restricted user), not the prompt. (The mechanics are in [extensions-with-pid.md](extensions-with-pid.md); the full reasoning is in ADR 0004.)
 
 `pid` is that somebody. It collects every approval request from every supervised service into one queue:
 
@@ -241,9 +238,9 @@ pid approve abc12345
 # ✓ Denied
 ```
 
-Behind the scenes `pid` writes the matching `extension_ui_response` back to the subprocess's stdin and the agent continues. Per-service policies (`gate` and `auto_approve`) let you fine-tune: maybe `inbox-watcher` can `bash:rm` freely inside `~/inbox/` but `morning-report` needs to ask before deleting anything anywhere.
+Behind the scenes `pid` writes the matching `extension_ui_response` back to the subprocess's stdin and the agent continues. Matching is structured and whole-word, so `bash:rm` flags a real `rm` — including inside a compound like `cd src && rm -rf *` — but never trips on `alarm-cli`. The block-list catches the destructive verb wherever it appears; everything you didn't list stays YOLO.
 
-**A note on design intent.** This is deliberately *not* a per-action approval dialog. Per-action dialogs cause fatigue — users either YOLO past them or hit enter without reading, neither of which is safety. pid's gate is narrow by design: you opt specific patterns *in* via `gate:`, with `auto_approve:` covering the broad safe defaults. The recommendation is to gate sparingly (the half-dozen actions you genuinely don't want happening without a glance) and lean on process-level isolation between pid and the subprocesses for the broader "agent does something unexpected" safety story. If your gate list is growing past a dozen patterns, that's a signal to reach for `pikg` (capability-scoped tool access, coming in a future chapter), not to keep adding to gate.
+**A note on design intent.** This is deliberately *not* a per-action approval dialog. Per-action dialogs cause fatigue — users either YOLO past them or hit enter without reading, neither of which is safety. pid's default is YOLO, exactly like pi: with no `gate`, nothing prompts. You opt *in* by block-listing the half-dozen destructive actions you genuinely don't want happening without a glance — a short, stable list. You don't allow-list the safe ones (that's the unbounded "bash is all you need" trap that breeds the very fatigue we're avoiding); `auto_approve` exists only for the narrow case of a service whose *job* includes a scary verb (a cleanup bot that deletes by design). For the broad "agent does something unexpected" story, lean on process-level isolation between pid and the subprocesses, and — when you need real capability limits — `pikg` (capability-scoped tool access, a future chapter), not an ever-growing gate list. `gate` is best-effort visibility, not a security boundary.
 
 This is the feature that lets you keep pi's "interactive YOLO" workflow *and* run agents safely unattended. Two different defaults for two different contexts, no fork of pi required.
 
@@ -260,7 +257,7 @@ The honest answer is that v0 of `pid` has a small extension surface — and that
 **2. Write pi extensions, run them under `pid`.** This is the powerful one. `pid` doesn't restrict what pi can do inside a supervised session — pi's extension API works exactly as documented. So you can:
 
 - Write a pi extension that adds a custom tool, ship it with your service, and `pid` happily supervises an agent using it.
-- Write a pi extension that intercepts tool calls and adds custom logic; whatever it does becomes part of the event stream that `pid` observes (and acts on via `gate`/`auto_approve`).
+- Write a pi extension that intercepts tool calls and adds custom logic; whatever it does becomes part of the event stream that `pid` observes (cost, failures, and — when the extension raises a dialog via `ctx.ui` — approvals it answers through `gate`/`auto_approve`).
 - Write a pi extension that uses the `extension_ui_request` protocol to ask the user something; `pid` will route the question to your approval inbox automatically.
 
 In effect, the union of pi's extension surface plus `pid`'s service surface is your customization toolkit. pi gives you per-session intelligence; `pid` gives you per-fleet policy.

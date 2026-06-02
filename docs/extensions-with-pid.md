@@ -131,26 +131,14 @@ export default function (pi: ExtensionAPI) {
 **The collaboration:**
 
 - **The extension is the local fast-path.** No round-trip, decision is immediate, no human involved.
-- **`pid` is the centralised audit and policy layer.** It logs every block, tracks how often it happens, can quarantine the service if the same block fires 50 times (suggesting the agent's stuck on a forbidden path), and can layer additional policy on top via `gate:`.
+- **`pid` is the centralised audit and policy layer.** It logs every block, tracks how often it happens, and can quarantine the service if the same block fires repeatedly (the agent stuck on a forbidden path).
 
 **When to use which**:
 
 - **Programmatic rule with no ambiguity** ("never run any command containing this regex"): pi extension. Fast, deterministic, no human in the loop.
-- **Rule that requires human judgment** ("ask me before deleting anything in production"): `pid`'s `gate:` field plus the approval inbox.
+- **Rule that requires human judgment** ("ask me before deleting anything in production"): a *dialog-raising* extension (Pattern 3 below) plus `pid`'s `gate:` field.
 
-They compose cleanly because both surface their decisions in the event stream. A real-world layering:
-
-```yaml
-# pid gates anything destructive — sends to approval inbox
-gate:
-  - bash:rm
-  - bash:git-push
-
-# Meanwhile the secret-scanner extension auto-blocks credential-leaking
-# commands without bothering you for approval. The two systems don't
-# conflict: the extension's block fires first (in-process), and pid
-# never sees the request because it was vetoed before execution.
-```
+These are **two different mechanisms**, and it's worth being precise about how they coexist — because `pid`'s `gate:` is *not* a tool firewall. The secret-scanner above **blocks autonomously**: there's no dialog and no human; its block surfaces as a `tool_execution_end` with `isError`, which `pid` logs and feeds to the crash detector. `pid`'s `gate:`, by contrast, only ever acts on an `extension_ui_request` — a dialog *some* extension chose to raise (Pattern 3) — and decides how `pid` answers it. So a single service can run **both**: the secret-scanner (instant, autonomous, for unambiguous rules) *and* a deploy-gating extension whose `confirm` `pid` routes to your inbox (for human-judgment calls). They don't overlap, and crucially: `gate:` cannot block a command the in-process extension didn't catch — only the extension can veto a tool. `gate:` is best-effort visibility on the dialogs you're shown; isolation is the real boundary.
 
 ## Pattern 3 — Ask the user something, route it through pid's approval inbox
 
@@ -200,8 +188,8 @@ The supervisor:
 
 1. Looks up the matching service config.
 2. If `method === "notify"`: log it, don't enqueue. No response needed.
-3. Runs policy: does this request match `auto_approve`? If yes, write the response back immediately. Does it match `gate`? If yes, enqueue. (Default: enqueue.)
-4. If enqueueing: persist the request to `~/.pi/pid/approvals/<uuid-1>.json` and bump the service's `pending_approvals` counter.
+3. Runs policy on the `confirm`, matched against the command of the tool currently in-flight: every command head allow-listed in `auto_approve` → reply immediately; else any `gate` token present → enqueue; else **reply (YOLO default)**. (`select`/`input`/`editor` always enqueue — there's no safe auto-answer for a choice or free text; fire-and-forget like `notify` is logged, never enqueued.)
+4. If enqueueing: hold the request in the in-memory inbox and bump the service's `pending_approvals` counter. The queue is session-scoped — a daemon restart drops it and the re-spawned service simply re-asks; the decision is written to the event log for audit.
 5. Until someone runs `pid approve uuid-1` or `pid deny uuid-1`, the pi subprocess is **paused** on this prompt — its event loop resumes only when a matching `extension_ui_response` arrives on stdin. (If the request included a `timeout` field, pi auto-resolves with a default value when it expires.)
 6. When you approve or deny via CLI, `pid` writes the matching response back:
 
@@ -233,8 +221,8 @@ Approval requests are a powerful feature with one major failure mode: **fatigue*
 
 Design guidance:
 
-- **Use approval requests for the half-dozen actions you genuinely don't want happening without a glance** — destructive bash, force-pushes, deploys, large spends. Not for routine reads or analyses.
-- **Default everything else to `auto_approve:`** — file reads, greps, finds, listings, normal git inspection. The user shouldn't see these in the inbox.
+- **Block-list the half-dozen actions you genuinely don't want happening without a glance** via `gate:` — destructive bash, force-pushes, deploys, large spends. Not routine reads or analyses.
+- **Don't allow-list the safe ones.** Everything you didn't `gate:` already runs (YOLO default) — you don't need to enumerate `read`, `grep`, `ls`. That allow-list is unbounded ("bash is all you need") and maintaining it *is* the fatigue. Reserve `auto_approve:` for the narrow case of a service whose *job* includes a scary verb (a cleanup bot that deletes by design).
 - **If your gate list grows past a dozen patterns**, that's a signal that you're using approvals for risks that approvals aren't well-suited to (broad capability constraints). Wait for `pikg` (capability-scoped tool access), or for now, lean on process-level isolation (separate `cwd` per service, capability-restricted user accounts) rather than expanding gates.
 - **Don't write extensions that prompt the user for routine decisions.** If your extension calls `ctx.ui.confirm()` on every iteration of a loop, you've designed a fatigue machine — refactor it so the decision happens once per session, not once per action.
 
@@ -254,7 +242,7 @@ Different layers of the stack are good at different things. A practical decision
 So:
 
 - Want to block any tool call matching a regex? **pi extension.**
-- Want to require approval before destructive actions? **`pid` `gate:` field.**
+- Want to require approval before destructive actions? **A dialog-raising extension + `pid`'s `gate:` field** (the extension raises the `confirm`; `gate:` decides how `pid` answers). `gate:` alone, with no extension asking, gates nothing.
 - Want to cap an agent at $5/day? **`pid` service file `budget:`.**
 - Want to detect when an agent has crashed 5 times in a row? **`pid` daemon, built-in.**
 - Want to give your agent access to your company's internal API? **pi extension (custom tool).**

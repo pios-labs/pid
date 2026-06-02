@@ -64,7 +64,7 @@ This document defines the v0 scope, architecture, schemas, and protocol for `pid
 - one event consumer per running subprocess that parses JSONL from stdout
 - the approval router that collects `extension_ui_request` and surfaces them on demand
 
-State persists to `~/.pi/pid/state.json` on every meaningful change. On daemon restart, `pid` reads state and resumes services that were running, re-attaching budgets and approval queues.
+State persists to `~/.pi/pid/state.json` on every meaningful change. On daemon restart, `pid` reads state and resumes services that were running, recovering budgets from their per-service files and re-holding quarantines. The approval inbox is **not** restored — it is in-memory and session-scoped (the re-spawned service re-asks; see "Product: approval inbox").
 
 ## Directory layout
 
@@ -144,9 +144,9 @@ quarantine:
   same_failure_threshold: 3    # N identical failures...
   window_seconds: 300          # ...within T seconds triggers quarantine
 
-gate:                          # tool calls matching these require approval
-  - bash:rm
-  - bash:sudo
+gate:                          # block-list: route the approval dialog for these to a human
+  - bash:rm                    # (acts on an extension's confirm dialog, not the tool call itself —
+  - bash:sudo                  #  see Product: approval inbox)
   - bash:git-push
   - write:outside_cwd
 auto_approve:                  # patterns that bypass gating (auto-confirm)
@@ -290,29 +290,37 @@ On each failure:
 
 ## Product: approval inbox
 
-When the event consumer sees an `extension_ui_request` on stdout:
+> **What pid can and cannot do here (the load-bearing constraint).** pid can only answer an `extension_ui_request` — a dialog a pi extension explicitly raised. It **cannot veto a tool call**: `tool_execution_start` is informational (pi's in-process permission decision is already made), and there is no "deny tool" message on the RPC protocol. Tool gating therefore lives *inside pi*, in an extension's `tool_call` hook that calls `ctx.ui.confirm(...)` and enforces the answer. **pid is the policy/audit layer on top of that extension — not a tool firewall.** The broad "agent does something insane" safety net is process isolation (`cwd`, restricted user) and, later, `pikg`. Full reasoning in ADR 0004.
+
+When the event consumer sees an `extension_ui_request` on stdout, it correlates the dialog with the tool currently **in-flight** for that service (a `tool_execution_start` with no matching `…_end` yet, i.e. the tool paused at its `tool_call` hook) to recover `toolName` + `args.command` for policy matching. A dialog with no in-flight tool is *free-standing* (a genuine question, e.g. a questionnaire extension) and is always enqueued.
 
 Request fields vary by method:
 
 | Method | Fields | Response format | Needs response? |
 |-|-|-|-|
 | `confirm` | `id`, `method`, `title`, `message`, optional `timeout` | `{ type, id, confirmed: boolean }` | yes |
-| `select` | `id`, `method`, `title`, `options`, optional `timeout` | `{ type, id, value: string }` | yes |
+| `select` | `id`, `method`, `title`, `options` (`string[]`), optional `timeout` | `{ type, id, value: string }` | yes |
 | `input` | `id`, `method`, `title`, optional `placeholder`, optional `timeout` | `{ type, id, value: string }` | yes |
-| `editor` | `id`, `method`, `title`, optional `prefilled` | `{ type, id, value: string }` | yes |
-| `notify` | `id`, `method`, `message`, `notifyType` | none (fire-and-forget) | no |
+| `editor` | `id`, `method`, `title`, optional `prefill` | `{ type, id, value: string }` | yes |
+| `notify` | `id`, `method`, `message`, `notifyType` (`info`\|`warning`\|`error`) | none (fire-and-forget) | no |
 
-Any method can also receive a cancellation response: `{ type, id, cancelled: true }`.
+Fire-and-forget (no response): `notify`, plus `setStatus`, `setWidget`, `setTitle`, `set_editor_text`. Any dialog method can also receive a cancellation response: `{ type, id, cancelled: true }`.
 
 Processing:
 
-1. If `method === "notify"`: log to event stream, do not enqueue. No response needed.
-2. Apply per-service `gate` and `auto_approve` patterns against the request method/args:
-   - `auto_approve` match → immediately reply via subprocess stdin with the appropriate response (`confirmed: true` for confirm, `value: <first-option>` for select, etc.)
-   - `gate` match → enqueue in approval inbox
-   - No match → default behavior is **enqueue** (safe default; configurable later)
-3. Write request to `~/.pi/pid/approvals/<id>.json` (includes service name, timestamp, raw request)
-4. Increment `pending_approvals` counter on service state
+1. **Fire-and-forget** (`notify`, `setStatus`, …): log to the event stream, never enqueue (no response is expected; enqueuing would orphan it).
+2. **`select` / `input` / `editor`**: always enqueue. There is no safe machine answer for a choice or free text, so policy does not auto-resolve these — a human picks the value.
+3. **`confirm`** (the method tool-gating extensions use): apply per-service policy against the correlated command, **asymmetrically** (see "Matching" below):
+   - command parses cleanly **and** every command head ∈ `auto_approve` → **approve** (reply `confirmed: true`).
+   - else any whole-word token ∈ `gate` → **enqueue**.
+   - else → **YOLO default**: approve (reply `confirmed: true`). With no `gate`/`auto_approve` config, pid behaves like bare pi.
+4. On enqueue: hold the request in the in-memory inbox keyed by `id`, record the service + timestamp, and bump the service's `pending_approvals` counter. Log the decision to the per-service event log for audit.
+
+**Matching (asymmetric — see ADR 0004).** Patterns are `tool` or `tool:command` (e.g. `bash`, `bash:rm`), matched on **structured whole words**, never substrings (so `bash:rm` never matches `alarm-cli`).
+
+- **`gate` over-matches** (false positives are safe — you just get asked): a gated token counts if it appears as a whole word *anywhere* in the command. This even catches `$(echo rm)`, `X=rm; $X`, `xargs rm`.
+- **`auto_approve` under-matches, fail-closed** (a false approval runs unattended): it fires only when the command parses cleanly into command heads **and every head is allow-listed**. Any substitution / variable command / `eval` / unparseable input → **bail to enqueue**. Blessed compounds are allowed (`auto_approve: [cd, rm]` approves `cd build && rm -rf *`); one unblessed or unresolvable head sinks the whole command.
+- **Recommended pattern: a targeted `gate` block-list** of the destructive few (`bash:rm`, `bash:git-push`, `bash:dd`). Do **not** gate a whole tool and allow-list the safe commands — "bash is all you need" makes that list unbounded (fatigue). `gate` is best-effort visibility, **not** a security boundary; `find -delete` and obfuscation carry no matchable token. Isolation is the boundary.
 
 `pid approvals`:
 
@@ -339,9 +347,9 @@ Allow `rm -rf ./tmp`?
 - `--value <v>` skips the interactive prompt and uses the supplied value directly
 - `pid deny <id>` for any method → writes `{ type: "extension_ui_response", id, cancelled: true }`
 
-On approve/deny: `pid` writes the response to the subprocess's stdin, removes the file from `approvals/`, decrements the counter.
+On approve/deny: `pid` writes the response to the subprocess's stdin, removes the entry from the in-memory inbox, decrements the counter.
 
-Pending approvals survive daemon restarts (on disk). On restart, `pid` re-attaches them to relevant services if those services are running again. If a request had a `timeout` field, pi's agent auto-resolves on its own clock; `pid` removes the entry when the timeout elapses to keep the inbox clean.
+**The inbox is in-memory / session-scoped.** Pending approvals are **not** persisted for restart-survival: pid's pi children die with the daemon, so a persisted pending dialog would reference a dead process that can no longer be answered (replying over a fresh pi's stdin with a stale `id` is a no-op). On a daemon restart the queue is dropped and the re-spawned service simply re-asks; approval *decisions* are still written to the per-service event log for audit. If a request had a `timeout`, pi auto-resolves on its own clock — pid expires the inbox entry at the deadline and tells a late `pid approve` "too late" (it does not send a now-ignored response). *(This corrects an earlier "persist + re-attach" design; same reasoning as ADR 0003's in-memory crash window.)*
 
 ## Logging
 
