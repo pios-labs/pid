@@ -67,6 +67,12 @@ describe("Supervisor.start", () => {
 		expect(logText).toContain('"message_end"');
 		expect(logText).toContain("pid_parse_error"); // malformed line was caught, not fatal
 
+		// Every line is enveloped (ADR 0005): parse the first and check the documented contract.
+		const env = JSON.parse(logText.trim().split("\n")[0] ?? "{}");
+		expect(env).toMatchObject({ v: 1, service: "fake", source: "pi", type: "agent_start" });
+		expect(typeof env.ts).toBe("string");
+		expect(env.data).toMatchObject({ type: "agent_start" }); // pi event preserved verbatim under data
+
 		await sup.shutdown();
 		expect((sup.status("fake") as ServiceRecord).state).toBe("stopped");
 		expect((sup.status("fake") as ServiceRecord).pid).toBeUndefined();

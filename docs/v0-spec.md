@@ -355,7 +355,7 @@ On approve/deny: `pid` writes the response to the subprocess's stdin, removes th
 
 Two log streams per service:
 
-1. **Raw event log** (`~/.pi/pid/logs/<name>.jsonl`) — every event from the subprocess, append-only. Rotated when > 100 MB (`<name>.1.jsonl.gz` etc., 5 rotations retained).
+1. **Event chronicle** (`~/.pi/pid/logs/<name>.jsonl`) — the single source of truth: every event pi emits **plus** pid's own synthetic events, append-only, one ordered replayable timeline. This is the substrate for the planned dashboard (observability mandate — see ADR 0004 "Revisit when"). (Rotation/retention is part of that deliverable; v0 appends without rotation.)
 2. **Human log** rendered on demand by `pid logs <name>`. Default view groups by turn:
 
 ```
@@ -374,6 +374,38 @@ Two log streams per service:
 ```
 
 `pid logs <name> --raw` falls back to JSONL. `--turns` is the default view. `-f` follows.
+
+### Log line schema (the chronicle contract)
+
+Every line in `logs/<name>.jsonl` shares one **envelope** (ADR 0005), so a reader can treat pi's events and pid's interventions as one timeline. This schema is a **versioned public contract** — third parties parse it to build dashboards or feed existing pi dashboards.
+
+| Field | Type | Meaning |
+|-|-|-|
+| `v` | int | schema version (currently `1`) |
+| `ts` | ISO-8601 string | time pid wrote the line (pid stamps it — pi's stream events carry no timestamp) |
+| `service` | string | originating service name |
+| `source` | `"pi"` \| `"pid"` | who produced the payload |
+| `type` | string | event type — pi's `type` verbatim, or a `pid_*` type |
+| `data` | object | event-specific payload (below) |
+
+**`source: "pi"`** — `data` is the pi event **verbatim** (we never rename pi's fields; see pi's `rpc.md` / `agent/src/types.ts` for their shapes, e.g. `tool_execution_start` → `{toolCallId, toolName, args}`). Nesting keeps the pi event recoverable intact and prevents envelope keys from colliding with pi fields.
+
+**`source: "pid"`** — `data` is the pid synthetic event's fields, named in pi's idiom (camelCase, `toolName`):
+
+| `type` | `data` fields |
+|-|-|
+| `pid_parse_error` | `error`, `raw` — a stdout line that wasn't valid JSON (skipped, not fatal) |
+| `pid_approval` | `id`, `phase` (`enqueue`\|`resolve`), `method`, `toolName?`, `command?`, `verdict?` (on enqueue), `decision?` (`auto_approve`\|`approve`\|`deny`\|`expired`), `by?` (`policy`\|`cli`\|`timeout`), `value?` (reply for select/input/editor) |
+| `pid_quarantine` *(planned)* | `signature`, `reason` |
+| `pid_budget_pause` / `pid_budget_resume` *(planned)* | `dimension`, `window`, `limit`, `spent` |
+
+Example (a denied destructive command — two pi lines then pid's decision):
+
+```jsonl
+{"v":1,"ts":"2026-06-03T03:01:14.002Z","service":"repo-janitor","source":"pi","type":"tool_execution_start","data":{"toolCallId":"tc_2","toolName":"bash","args":{"command":"rm -rf node_modules"}}}
+{"v":1,"ts":"2026-06-03T03:01:14.040Z","service":"repo-janitor","source":"pi","type":"extension_ui_request","data":{"type":"extension_ui_request","id":"req_2","method":"confirm","message":"Run: rm -rf node_modules ?"}}
+{"v":1,"ts":"2026-06-03T03:02:20.119Z","service":"repo-janitor","source":"pid","type":"pid_approval","data":{"id":"req_2","phase":"resolve","decision":"deny","by":"cli","method":"confirm","command":"rm -rf node_modules"}}
+```
 
 ## Failure modes & recovery
 

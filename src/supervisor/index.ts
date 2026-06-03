@@ -10,6 +10,7 @@ import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
 import { attachJsonlReader, serializeJsonLine } from "../util/jsonl.js";
+import { formatPidEvent, formatPiEvent } from "../util/log.js";
 import { expandTilde, logsDir } from "../util/paths.js";
 
 /** Per-dimension manual budget override (number = new ceiling, null = unlimited, absent = unchanged). */
@@ -172,13 +173,16 @@ export class Supervisor implements BudgetActions, CrashActions {
 			running.detachReader = attachJsonlReader(
 				child.stdout,
 				(event) => {
-					log.write(`${JSON.stringify(event)}\n`);
+					// Every line is enveloped (ADR 0005): pi's event is preserved verbatim under `data`.
+					// onServiceEvent still receives the raw parsed event — the envelope is a log-format
+					// concern only, not part of the in-process event the governor/crash detector react to.
+					log.write(formatPiEvent(name, event, new Date().toISOString()));
 					this.onServiceEvent(name, event);
 				},
 				(err, raw) => {
 					// Malformed line: warn, skip, continue (spec: failure modes).
 					process.stderr.write(`[${name}] skipped malformed event line: ${err.message}\n`);
-					log.write(`${JSON.stringify({ type: "pid_parse_error", error: err.message, raw })}\n`);
+					log.write(formatPidEvent(name, "pid_parse_error", { error: err.message, raw }, new Date().toISOString()));
 				},
 			);
 		}
