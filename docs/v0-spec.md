@@ -144,16 +144,16 @@ quarantine:
   same_failure_threshold: 3    # N identical failures...
   window_seconds: 300          # ...within T seconds triggers quarantine
 
-gate:                          # block-list: route the approval dialog for these to a human
-  - bash:rm                    # (acts on an extension's confirm dialog, not the tool call itself —
-  - bash:sudo                  #  see Product: approval inbox)
-  - bash:git-push
-  - write:outside_cwd
-auto_approve:                  # patterns that bypass gating (auto-confirm)
-  - read
-  - grep
-  - find
-  - ls
+on_unmatched: approve          # posture for a dialog matching neither list: approve (trusting,
+                               #  the default) or ask (cautious). gate pairs with approve; auto_approve with ask.
+gate:                          # trusting block-list — route these to a human (acts on an
+  - bash:rm                    #  extension's confirm dialog, not the tool call itself; see
+  - bash:sudo                  #  Product: approval inbox). Descriptor: <tool> or bash:<phrase>.
+  - bash:git push              #  multi-word phrase = space-separated, matched on whole tokens
+  - write                      # a bare tool name gates that whole tool
+auto_approve:                  # cautious allow-list — only these auto-confirm (use with
+  - bash:npm test              #  on_unmatched: ask). Phrase-level, so "npm test" ≠ "npm publish".
+  - bash:git status
 ```
 
 Validation: a JSON Schema ships in the repo. `pid reload` reports schema errors per file and refuses to load invalid ones, leaving prior state untouched.
@@ -311,16 +311,16 @@ Processing:
 1. **Fire-and-forget** (`notify`, `setStatus`, …): log to the event stream, never enqueue (no response is expected; enqueuing would orphan it).
 2. **`select` / `input` / `editor`**: always enqueue. There is no safe machine answer for a choice or free text, so policy does not auto-resolve these — a human picks the value.
 3. **`confirm`** (the method tool-gating extensions use): apply per-service policy against the correlated command, **asymmetrically** (see "Matching" below):
-   - command parses cleanly **and** every command head ∈ `auto_approve` → **approve** (reply `confirmed: true`).
-   - else any whole-word token ∈ `gate` → **enqueue**.
-   - else → **YOLO default**: approve (reply `confirmed: true`). With no `gate`/`auto_approve` config, pid behaves like bare pi.
+   - `auto_approve` fires (command parses cleanly **and** every `&&`/`;`/`|` segment's leading words prefix-match a blessed phrase, or a bare `<tool>` entry matches the dialog's tool) → **approve** (reply `confirmed: true`).
+   - else `gate` matches (a blessed phrase appears anywhere, or a bare `<tool>` matches) → **enqueue**.
+   - else → **`on_unmatched`**: `approve` (the trusting/YOLO default — with no config pid behaves like bare pi) or `ask` (the cautious default — enqueue).
 4. On enqueue: hold the request in the in-memory inbox keyed by `id`, record the service + timestamp, and bump the service's `pending_approvals` counter. Log the decision to the per-service event log for audit.
 
-**Matching (asymmetric — see ADR 0004).** Patterns are `tool` or `tool:command` (e.g. `bash`, `bash:rm`), matched on **structured whole words**, never substrings (so `bash:rm` never matches `alarm-cli`).
+**Matching (asymmetric — see ADR 0004).** One descriptor grammar for both lists: `<tool>` (a bare pi tool name — `bash`, `read`, `write`, … — matching the dialog's tool) or `bash:<phrase>` (the bash tool plus one or more **space-separated** words, matched on **whole tokens**, never substrings — so `bash:rm` never matches `alarm-cli`). A bare token is *always* a tool name; `gate: [rm]` is a typo (rejected at load) — write `bash:rm`.
 
-- **`gate` over-matches** (false positives are safe — you just get asked): a gated token counts if it appears as a whole word *anywhere* in the command. This even catches `$(echo rm)`, `X=rm; $X`, `xargs rm`.
-- **`auto_approve` under-matches, fail-closed** (a false approval runs unattended): it fires only when the command parses cleanly into command heads **and every head is allow-listed**. Any substitution / variable command / `eval` / unparseable input → **bail to enqueue**. Blessed compounds are allowed (`auto_approve: [cd, rm]` approves `cd build && rm -rf *`); one unblessed or unresolvable head sinks the whole command.
-- **Recommended pattern: a targeted `gate` block-list** of the destructive few (`bash:rm`, `bash:git-push`, `bash:dd`). Do **not** gate a whole tool and allow-list the safe commands — "bash is all you need" makes that list unbounded (fatigue). `gate` is best-effort visibility, **not** a security boundary; `find -delete` and obfuscation carry no matchable token. Isolation is the boundary.
+- **`gate` over-matches** (false positives are safe — you just get asked): a blessed phrase counts if it appears as consecutive tokens *anywhere* in the command. Tokenization is quote-blind and aggressive, so it even catches `$(echo rm)`, `X=rm; $X`, `xargs rm`.
+- **`auto_approve` under-matches, fail-closed** (a false approval runs unattended): it fires only when the command parses cleanly and **every `&&`/`;`/`|` segment's leading words prefix-match a blessed phrase**. Matching is at subcommand/phrase level, so `bash:npm test` blesses `npm test --watch` but **not** `npm publish` (a one-word phrase like `bash:npm` still means "all npm"). Substitution / `$VAR` / `eval` / unbalanced quotes → **bail to enqueue**; blessed compounds are fine (`auto_approve: [bash:cd, bash:rm]` approves `cd build && rm -rf *`) because *every* segment must match.
+- **Two postures, each a small list (`on_unmatched`).** *Trusting* (`approve`, the default): a short `gate` block-list of the dangerous few. *Cautious* (`ask`): a short `auto_approve` allow-list of what the service is *for*. Don't use the wrong-sided list — block-listing every danger, or allow-listing every safe command, is the unbounded list that breeds fatigue; if a list grows without end you've picked the wrong posture, or the service is mis-scoped. `gate` is best-effort visibility, **not** a security boundary (`find -delete` and obfuscation carry no matchable token); the cautious posture fails *closed*, so it is the stronger one. Isolation is the boundary.
 
 `pid approvals`:
 

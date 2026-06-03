@@ -40,7 +40,7 @@ budget:
 restart: on-failure
 gate:
   - bash:rm
-  - bash:git-push
+  - bash:git push
 ```
 
 Enable and start:

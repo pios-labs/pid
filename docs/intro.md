@@ -213,7 +213,7 @@ You block-list the handful of actions you want a glance at; `pid` routes those r
 # the targeted block-list — the destructive few you don't want happening unseen
 gate:
   - bash:rm
-  - bash:git-push
+  - bash:git push
 ```
 
 This builds on a feature pi already has: extensions can emit `extension_ui_request` events to ask the user a question ("⚠️ Allow `rm -rf ./tmp`?"). When you're sitting in the TUI, pi pops a dialog. When the agent is headless, the request just sits there waiting for somebody to answer.
@@ -238,9 +238,14 @@ pid approve abc12345
 # ✓ Denied
 ```
 
-Behind the scenes `pid` writes the matching `extension_ui_response` back to the subprocess's stdin and the agent continues. Matching is structured and whole-word, so `bash:rm` flags a real `rm` — including inside a compound like `cd src && rm -rf *` — but never trips on `alarm-cli`. The block-list catches the destructive verb wherever it appears; everything you didn't list stays YOLO.
+Behind the scenes `pid` writes the matching `extension_ui_response` back to the subprocess's stdin and the agent continues. Matching is structured and whole-word, so `bash:rm` flags a real `rm` — including inside a compound like `cd src && rm -rf *` — but never trips on `alarm-cli`. The block-list catches the destructive verb wherever it appears; everything you didn't list follows your posture — YOLO by default.
 
-**A note on design intent.** This is deliberately *not* a per-action approval dialog. Per-action dialogs cause fatigue — users either YOLO past them or hit enter without reading, neither of which is safety. pid's default is YOLO, exactly like pi: with no `gate`, nothing prompts. You opt *in* by block-listing the half-dozen destructive actions you genuinely don't want happening without a glance — a short, stable list. You don't allow-list the safe ones (that's the unbounded "bash is all you need" trap that breeds the very fatigue we're avoiding); `auto_approve` exists only for the narrow case of a service whose *job* includes a scary verb (a cleanup bot that deletes by design). For the broad "agent does something unexpected" story, lean on process-level isolation between pid and the subprocesses, and — when you need real capability limits — `pikg` (capability-scoped tool access, a future chapter), not an ever-growing gate list. `gate` is best-effort visibility, not a security boundary.
+**A note on design intent.** This is deliberately *not* a per-action approval dialog. Per-action dialogs cause fatigue — users either YOLO past them or hit enter without reading, neither of which is safety. pid's default is YOLO, exactly like pi: with no config, nothing prompts. From there you pick the posture that matches your intent, and **each one stays a small list**:
+
+- **Trusting** (`on_unmatched: approve`, the default) — "run freely, stop for the dangerous few": a short `gate` block-list (`bash:rm`, `bash:git push`).
+- **Cautious** (`on_unmatched: ask`) — "only do these few things, ask about the rest": a short `auto_approve` allow-list of what the service is *for* (`bash:npm test`, `bash:git status`), matched at subcommand level so a blessed `npm test` can't smuggle in an `npm publish`.
+
+What to avoid is using the wrong-sided list for your intent — block-listing every danger, or allow-listing every safe command — the unbounded list that breeds the very fatigue we're avoiding. If your list grows without end, you've picked the wrong posture, or (more often) the service is too broad: narrow it to one job per `cwd`. For real capability limits, lean on process-level isolation between pid and the subprocesses, and — later — `pikg` (capability-scoped tool access, a future chapter), not an ever-growing policy list. `gate` is best-effort visibility, not a security boundary; the cautious posture, which fails *closed*, is the stronger of the two.
 
 This is the feature that lets you keep pi's "interactive YOLO" workflow *and* run agents safely unattended. Two different defaults for two different contexts, no fork of pi required.
 

@@ -52,8 +52,8 @@ quarantine:
   window_seconds: 600
 
 gate:
-  - bash:git-push
-  - bash:gh-pr-merge
+  - bash:git push
+  - bash:gh pr merge
 ```
 
 **Per-team budgets are just several of these under one daemon.** pid enforces each service's cap independently and sums them into a fleet total, so `pid status` showing five services with five budgets and today's spend per service *is* the FinOps view — no separate platform required.
@@ -86,9 +86,9 @@ budget:
   on_exceed: quarantine     # still burning at the cap = broken, not slow
 
 gate:
-  - bash:git-push
+  - bash:git push
   - bash:rm
-  - bash:git-reset
+  - bash:git reset
 ```
 
 pid bounds the *cost and blast radius* — it does not vouch for the diff. Pair it with mandatory human review; that's the point of the draft-PR-only instruction and the `git-push` gate.
@@ -118,12 +118,12 @@ budget:
   on_exceed: pause
 
 gate:
-  - bash:git-push
-  - bash:npm-publish
+  - bash:git push
+  - bash:npm publish
 
 auto_approve:
-  - bash:npm-install
-  - bash:npm-test
+  - bash:npm install
+  - bash:npm test
 ```
 
 **Auditable autonomy.** A scheduled, report-only agent whose gate blocks every write path. pid records every action, cost, and approval to the service's event log — an audit trail by construction, which matters as agent actions come under the same governance scrutiny as everything else in production ([IBM on the agent control plane](https://www.ibm.com/think/topics/agent-control-plane)).
@@ -147,9 +147,9 @@ budget:
   on_exceed: notify
 
 gate:
-  - bash:aws-iam-put
-  - bash:aws-s3-put
-  - bash:terraform-apply
+  - bash:aws iam
+  - bash:aws s3
+  - bash:terraform apply
 ```
 
 ## Resilient unattended automation

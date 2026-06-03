@@ -188,7 +188,7 @@ The supervisor:
 
 1. Looks up the matching service config.
 2. If `method === "notify"`: log it, don't enqueue. No response needed.
-3. Runs policy on the `confirm`, matched against the command of the tool currently in-flight: every command head allow-listed in `auto_approve` → reply immediately; else any `gate` token present → enqueue; else **reply (YOLO default)**. (`select`/`input`/`editor` always enqueue — there's no safe auto-answer for a choice or free text; fire-and-forget like `notify` is logged, never enqueued.)
+3. Runs policy on the `confirm`, matched against the command of the tool currently in-flight: `auto_approve` fires (every `&&`/`;`/`|` segment's leading words prefix-match a blessed `bash:<phrase>`, or a bare `<tool>` matches) → reply immediately; else `gate` matches → enqueue; else the **`on_unmatched` posture** (`approve` = reply/YOLO, the default; `ask` = enqueue). (`select`/`input`/`editor` always enqueue — there's no safe auto-answer for a choice or free text; fire-and-forget like `notify` is logged, never enqueued.)
 4. If enqueueing: hold the request in the in-memory inbox and bump the service's `pending_approvals` counter. The queue is session-scoped — a daemon restart drops it and the re-spawned service simply re-asks; the decision is written to the event log for audit.
 5. Until someone runs `pid approve uuid-1` or `pid deny uuid-1`, the pi subprocess is **paused** on this prompt — its event loop resumes only when a matching `extension_ui_response` arrives on stdin. (If the request included a `timeout` field, pi auto-resolves with a default value when it expires.)
 6. When you approve or deny via CLI, `pid` writes the matching response back:
@@ -221,9 +221,9 @@ Approval requests are a powerful feature with one major failure mode: **fatigue*
 
 Design guidance:
 
-- **Block-list the half-dozen actions you genuinely don't want happening without a glance** via `gate:` — destructive bash, force-pushes, deploys, large spends. Not routine reads or analyses.
-- **Don't allow-list the safe ones.** Everything you didn't `gate:` already runs (YOLO default) — you don't need to enumerate `read`, `grep`, `ls`. That allow-list is unbounded ("bash is all you need") and maintaining it *is* the fatigue. Reserve `auto_approve:` for the narrow case of a service whose *job* includes a scary verb (a cleanup bot that deletes by design).
-- **If your gate list grows past a dozen patterns**, that's a signal that you're using approvals for risks that approvals aren't well-suited to (broad capability constraints). Wait for `pikg` (capability-scoped tool access), or for now, lean on process-level isolation (separate `cwd` per service, capability-restricted user accounts) rather than expanding gates.
+- **Pick the posture that matches your intent — each stays a small list.** *Trusting* (`on_unmatched: approve`, the default): a short `gate` block-list of the dangerous few — destructive bash, force-pushes, deploys, large spends. *Cautious* (`on_unmatched: ask`): a short `auto_approve` allow-list of what the service is *for*, at subcommand level (`bash:npm test`, not `bash:npm`) so a blessed program can't smuggle a dangerous subcommand (`npm publish`).
+- **Don't use the wrong-sided list.** Block-listing every danger ("gate 25 args to be safe") or allow-listing every safe command ("approve 65 things to block one `rm`") is the unbounded list that *is* the fatigue. If your list grows without end, you've picked the wrong posture — or, more often, the service is mis-scoped.
+- **If even the right list keeps growing**, that's a signal you're using approvals for broad capability constraints they aren't well-suited to. Wait for `pikg` (capability-scoped tool access), or for now lean on process-level isolation (separate `cwd` per service, capability-restricted user accounts) rather than expanding the list.
 - **Don't write extensions that prompt the user for routine decisions.** If your extension calls `ctx.ui.confirm()` on every iteration of a loop, you've designed a fatigue machine — refactor it so the decision happens once per session, not once per action.
 
 The principle: gate sparingly, and design so the operator's attention is reserved for moments where it actually matters.
