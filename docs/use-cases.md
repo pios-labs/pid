@@ -83,7 +83,9 @@ trigger:
 
 budget:
   daily_usd: 25.00
-  on_exceed: quarantine     # still burning at the cap = broken, not slow
+  on_exceed: pause          # still burning at the cap = broken, not slow.
+                            # (was 'quarantine' — that value is deferred in v0, see ADR 0002;
+                            #  budgets enforce pause | notify. pause holds it until the window resets.)
 
 gate:
   - bash:git push
