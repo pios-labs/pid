@@ -11,6 +11,7 @@ const fixturePath = fileURLToPath(new URL("fixtures/fake-pi.mjs", import.meta.ur
 const spenderPath = fileURLToPath(new URL("fixtures/fake-pi-spender.mjs", import.meta.url));
 const crasherPath = fileURLToPath(new URL("fixtures/fake-pi-crasher.mjs", import.meta.url));
 const echoPath = fileURLToPath(new URL("fixtures/fake-pi-echo.mjs", import.meta.url));
+const approverPath = fileURLToPath(new URL("fixtures/fake-pi-approver.mjs", import.meta.url));
 
 // paths.ts reads PID_HOME at module-eval time, so set it before importing anything
 // that pulls it in, then load the modules dynamically.
@@ -28,6 +29,7 @@ beforeAll(async () => {
 	await chmod(spenderPath, 0o755);
 	await chmod(crasherPath, 0o755);
 	await chmod(echoPath, 0o755);
+	await chmod(approverPath, 0o755);
 });
 
 afterAll(async () => {
@@ -271,6 +273,48 @@ describe("Supervisor crash-detector integration", () => {
 		await sup2.unquarantine("quar-persist");
 		await sup2.disable("quar-persist");
 		await sup2.shutdown();
+	});
+});
+
+describe("Supervisor approval router integration", () => {
+	it("auto-approves a confirm under the trusting posture and replies over stdin", async () => {
+		const state = await StateStore.open();
+		// no gate, on_unmatched defaults to approve → the confirm for `ls -la` auto-approves
+		const config = serviceSchema.parse({ name: "auto-appr", command: approverPath });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		await sup.start("auto-appr");
+
+		// The fixture echoes the reply it received; its appearance proves the router correlated the
+		// dialog to the in-flight bash tool, classified it approve, and replied over stdin.
+		const logText = await waitForLog(join(tmp, "logs", "auto-appr.jsonl"), "ui_response_seen");
+		expect(logText).toContain('"decision":"auto_approve"');
+		expect(logText).toContain('"received":{"type":"extension_ui_response","id":"req-1","confirmed":true}');
+		expect(sup.listApprovals()).toHaveLength(0);
+
+		await sup.shutdown();
+	});
+
+	it("enqueues a gated confirm, then `approve` replies over stdin and clears the inbox", async () => {
+		const state = await StateStore.open();
+		const config = serviceSchema.parse({ name: "gated-appr", command: approverPath, gate: ["bash:ls"] });
+		const sup = new Supervisor({ state, services: { services: [config], errors: [] } });
+
+		await sup.start("gated-appr");
+
+		// `ls` is gated → enqueue, no reply yet.
+		await waitForLog(join(tmp, "logs", "gated-appr.jsonl"), '"phase":"enqueue"');
+		const pending = sup.listApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toMatchObject({ id: "req-1", service: "gated-appr", command: "ls -la" });
+
+		// Human approves → reply goes over stdin, fixture echoes it, inbox clears.
+		await sup.approveRequest("req-1");
+		const logText = await waitForLog(join(tmp, "logs", "gated-appr.jsonl"), "ui_response_seen");
+		expect(logText).toContain('"decision":"approve"');
+		expect(sup.listApprovals()).toHaveLength(0);
+
+		await sup.shutdown();
 	});
 });
 

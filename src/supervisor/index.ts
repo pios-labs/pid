@@ -3,6 +3,7 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { type ApprovalActions, ApprovalRouter, type PendingApproval } from "../approvals/router.js";
 import { BudgetStore, type OverrideState } from "../budget/store.js";
 import { type BudgetActions, CostGovernor } from "../governor/cost.js";
 import { type CrashActions, CrashDetector } from "../governor/crash.js";
@@ -60,7 +61,7 @@ interface RunningProcess {
  * v0 scaffold: methods stub out, structure is in place. Real implementations land in
  * follow-up commits.
  */
-export class Supervisor implements BudgetActions, CrashActions {
+export class Supervisor implements BudgetActions, CrashActions, ApprovalActions {
 	private readonly state: StateStore;
 	private readonly services: Map<string, ServiceRecord>;
 	private readonly running: Map<string, RunningProcess>;
@@ -68,15 +69,23 @@ export class Supervisor implements BudgetActions, CrashActions {
 	private governor?: CostGovernor;
 	/** Always present: crash detection is core supervision, on for every service (ADR 0003). */
 	private readonly crash: CrashDetector;
+	/** Always present: routes pi dialogs to the CLI inbox and auto-answers per policy (ADR 0004). */
+	private readonly approvals: ApprovalRouter;
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
 		this.services = new Map();
 		this.running = new Map();
 		this.crash = new CrashDetector({ actions: this });
+		this.approvals = new ApprovalRouter({ actions: this });
 		for (const config of opts.services.services) {
 			this.services.set(config.name, { name: config.name, config, state: "stopped" });
 			this.crash.register(config.name, config.quarantine);
+			this.approvals.register(config.name, {
+				gate: config.gate,
+				autoApprove: config.auto_approve,
+				onUnmatched: config.on_unmatched,
+			});
 		}
 	}
 
@@ -396,8 +405,9 @@ export class Supervisor implements BudgetActions, CrashActions {
 	}
 
 	async shutdown(): Promise<void> {
-		// Cancel any pending budget resume timers so none outlives the daemon.
+		// Cancel any pending budget resume + approval-timeout timers so none outlives the daemon.
 		this.governor?.dispose();
+		this.approvals.dispose();
 		// Reap every running child so the daemon doesn't orphan pi processes.
 		// Graceful teardown lives in stop(); this is plain SIGTERM→SIGKILL.
 		await Promise.all([...this.running.values()].map((rp) => this.terminate(rp.child)));
@@ -442,6 +452,33 @@ export class Supervisor implements BudgetActions, CrashActions {
 	private onServiceEvent(name: string, event: unknown): void {
 		void this.governor?.handleEvent(name, event);
 		void this.crash.handleEvent(name, event);
+		this.approvals.handleEvent(name, event);
+	}
+
+	/**
+	 * ApprovalActions: append a documented `pid_approval` event to the service's chronicle (ADR
+	 * 0004 §11 / ADR 0005), enveloped like every other line. No-op if the service isn't running —
+	 * a late resolution after the child exited has no live log stream (and its reply would fail).
+	 */
+	logApproval(name: string, data: Record<string, unknown>): void {
+		const running = this.running.get(name);
+		if (!running) return;
+		running.log.write(formatPidEvent(name, "pid_approval", data, new Date().toISOString()));
+	}
+
+	/** Pending approvals across all services (the `approvals` command; CLI dispatch in increment D). */
+	listApprovals(): PendingApproval[] {
+		return this.approvals.list();
+	}
+
+	/** Approve a pending dialog (`pid approve`); replies to pi over stdin. Rejects if the id isn't pending. */
+	approveRequest(id: string, value?: string): Promise<PendingApproval> {
+		return this.approvals.approve(id, value);
+	}
+
+	/** Deny a pending dialog (`pid deny`). Rejects if the id isn't pending. */
+	denyRequest(id: string, reason?: string): Promise<PendingApproval> {
+		return this.approvals.deny(id, reason);
 	}
 
 	/** Transition a service out of the running set on child exit or spawn error. */
