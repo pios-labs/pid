@@ -22,6 +22,6 @@ budget:
   on_exceed: pause          # hard stop at the cap until the next budget window
 
 gate:
-  - bash:git-push
+  - bash:git push
   - bash:rm
-  - bash:git-reset
+  - bash:git reset

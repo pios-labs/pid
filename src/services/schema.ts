@@ -1,5 +1,27 @@
 import { z } from "zod";
+import { parseDescriptor } from "../approvals/matcher.js";
 import { isValidTimeZone } from "../util/time.js";
+
+/**
+ * An approval policy list (`gate` / `auto_approve`). Each entry must parse as a descriptor
+ * (`<tool>` or `bash:<phrase>`, ADR 0004 §6); a bad entry — e.g. the `gate: [rm]` typo, where a
+ * bare token must be a pi tool name — is rejected at load with the parser's own guidance.
+ */
+const descriptorListSchema = z
+	.array(z.string())
+	.default([])
+	.superRefine((list, ctx) => {
+		for (const raw of list) {
+			try {
+				parseDescriptor(raw);
+			} catch (err) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	});
 
 const triggerSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("manual") }),
@@ -76,8 +98,11 @@ export const serviceSchema = z.object({
 	budget: budgetSchema.optional(),
 	restart: restartSchema.default({}),
 	quarantine: quarantineSchema.default({}),
-	gate: z.array(z.string()).default([]),
-	auto_approve: z.array(z.string()).default([]),
+	gate: descriptorListSchema,
+	auto_approve: descriptorListSchema,
+	// Posture for a dialog matching neither list (ADR 0004 §1): `approve` = trusting/YOLO (the
+	// default — a small `gate` block-list), `ask` = cautious (a small `auto_approve` allow-list).
+	on_unmatched: z.enum(["approve", "ask"]).default("approve"),
 });
 
 export type ServiceConfig = z.infer<typeof serviceSchema>;

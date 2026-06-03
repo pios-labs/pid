@@ -23,8 +23,8 @@ restart:
 
 gate:
   - bash:rm
-  - bash:git-push
-  - write:outside_cwd
+  - bash:git push
+  - write            # gate every write (v0 can't path-match yet — ADR 0004)
 
 auto_approve:
   - read

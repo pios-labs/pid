@@ -17,6 +17,6 @@ budget:
   on_exceed: notify
 
 gate:
-  - bash:aws-iam-put
-  - bash:aws-s3-put
-  - bash:terraform-apply
+  - bash:aws iam            # gate all IAM ops (v0 matches whole tokens, not verb prefixes)
+  - bash:aws s3
+  - bash:terraform apply

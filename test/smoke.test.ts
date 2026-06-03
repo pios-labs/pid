@@ -20,7 +20,7 @@ describe("service schema", () => {
 			tools: ["read", "grep", "find", "ls"],
 			trigger: { type: "file_watch", path: "~/inbox/", events: ["add"] },
 			budget: { daily_usd: 2.0, on_exceed: "pause" },
-			gate: ["bash:rm", "bash:git-push"],
+			gate: ["bash:rm", "bash:git push"],
 		});
 		expect(parsed.budget?.daily_usd).toBe(2);
 		expect(parsed.gate).toContain("bash:rm");
@@ -76,6 +76,16 @@ describe("service schema", () => {
 
 	it("rejects invalid thinking levels", () => {
 		expect(() => serviceSchema.parse({ name: "bad-thinking", model: { thinking: "mega" } })).toThrow();
+	});
+
+	it("defaults on_unmatched to approve (the trusting/YOLO posture)", () => {
+		expect(serviceSchema.parse({ name: "yolo" }).on_unmatched).toBe("approve");
+		expect(serviceSchema.parse({ name: "cautious", on_unmatched: "ask" }).on_unmatched).toBe("ask");
+	});
+
+	it("rejects an approval descriptor whose bare token isn't a pi tool (the gate: [rm] typo)", () => {
+		expect(() => serviceSchema.parse({ name: "typo", gate: ["rm"] })).toThrow(/bash:rm/);
+		expect(() => serviceSchema.parse({ name: "nonbash", auto_approve: ["write:/etc"] })).toThrow();
 	});
 });
 

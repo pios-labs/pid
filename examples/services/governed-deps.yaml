@@ -17,9 +17,9 @@ budget:
   on_exceed: pause
 
 gate:
-  - bash:git-push           # nothing leaves the machine without a human OK
-  - bash:npm-publish
+  - bash:git push           # nothing leaves the machine without a human OK
+  - bash:npm publish
 
 auto_approve:
-  - bash:npm-install
-  - bash:npm-test
+  - bash:npm install
+  - bash:npm test

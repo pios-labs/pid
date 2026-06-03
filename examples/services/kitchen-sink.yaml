@@ -105,12 +105,13 @@ quarantine:
   window_seconds: 300         # default: 300. ...within this window -> quarantine
 
 # Approval policy ("sudoers for the agent"). gate = require human approval;
-# auto_approve = pre-approved so they never prompt. Patterns include tool names
-# (read, grep), "bash:<cmd>", and "write:outside_cwd".
+# auto_approve = pre-approved so they never prompt. A descriptor is a bare tool
+# name (read, grep, write — matches that whole tool) or "bash:<phrase>" (one or
+# more space-separated words, e.g. "bash:git push"). on_unmatched sets the posture.
 gate:
-  - bash:git-push
+  - bash:git push
   - bash:rm
-  - write:outside_cwd
+  - write            # gate every write (v0 can't path-match yet — ADR 0004)
 auto_approve:
   - read
   - grep

@@ -31,5 +31,5 @@ quarantine:
   window_seconds: 600
 
 gate:
-  - bash:git-push
-  - bash:gh-pr-merge
+  - bash:git push
+  - bash:gh pr merge
