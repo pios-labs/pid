@@ -155,19 +155,19 @@ export class ApprovalRouter {
 	 * `confirmed: true`; for `select`/`input`/`editor` replies `value`. Throws if the id isn't
 	 * pending (already resolved, expired, or unknown).
 	 */
-	async approve(id: string, value = ""): Promise<PendingApproval> {
-		const entry = this.claim(id);
-		const reply =
-			entry.method === "confirm"
-				? { type: "extension_ui_response", id, confirmed: true }
-				: { type: "extension_ui_response", id, value };
+	async approve(id: string, value?: string): Promise<PendingApproval> {
+		const entry = this.peek(id);
+		// Build + validate the reply *before* claiming, so a missing/invalid value leaves the
+		// request pending for a corrected retry rather than silently dropping it from the inbox.
+		const reply = buildApproveReply(entry, value);
+		this.claim(id);
 		await this.actions.send(entry.service, reply);
 		this.actions.logApproval(entry.service, {
 			...this.context(entry),
 			phase: "resolve",
 			decision: "approve",
 			by: "cli",
-			value: entry.method === "confirm" ? null : value,
+			value: entry.method === "confirm" ? null : (value ?? null),
 		});
 		return entry;
 	}
@@ -271,6 +271,13 @@ export class ApprovalRouter {
 		});
 	}
 
+	/** Look up a pending entry without removing it — used to validate a reply before claiming. */
+	private peek(id: string): PendingApproval {
+		const entry = this.inbox.get(id);
+		if (!entry) throw new Error(`no pending approval: ${id} (already resolved, expired, or unknown)`);
+		return entry;
+	}
+
 	/** Remove and return a pending entry, claiming it atomically so a racing timeout can't double-resolve. */
 	private claim(id: string): PendingApproval {
 		const entry = this.inbox.get(id);
@@ -297,6 +304,48 @@ export class ApprovalRouter {
 			...(entry.command !== undefined ? { command: entry.command } : {}),
 		};
 	}
+}
+
+/**
+ * Build the affirmative reply for an approval, validating the operator-supplied value.
+ * `confirm` is a boolean yes and ignores any value. `select`/`input`/`editor` require a value;
+ * `select` is checked **fail-closed** against the dialog's offered options (an out-of-set value
+ * would resolve pi's promise with garbage). Throws a user-facing message — surfaced by the CLI —
+ * when the value is missing or invalid; the caller validates before claiming, so the request stays
+ * pending for a corrected retry.
+ */
+function buildApproveReply(entry: PendingApproval, value?: string): Record<string, unknown> {
+	if (entry.method === "confirm") {
+		return { type: "extension_ui_response", id: entry.id, confirmed: true };
+	}
+	if (value === undefined) throw new Error(needsValueMessage(entry));
+	if (entry.method === "select") {
+		const options = selectOptions(entry);
+		if (!options.includes(value)) {
+			throw new Error(`'${value}' is not a valid option for ${entry.id}; choose: ${options.join(" | ")}`);
+		}
+	}
+	return { type: "extension_ui_response", id: entry.id, value };
+}
+
+/** The string options offered by a `select` dialog (defensive: tolerate a malformed request). */
+function selectOptions(entry: PendingApproval): string[] {
+	const options = (entry.request as { options?: unknown }).options;
+	return Array.isArray(options) ? options.filter((o): o is string => typeof o === "string") : [];
+}
+
+/** A user-facing hint naming what a non-`confirm` dialog needs, with method-specific context. */
+function needsValueMessage(entry: PendingApproval): string {
+	const base = `approval ${entry.id} (${entry.method}) needs a value`;
+	if (entry.method === "select") return `${base}; options: ${selectOptions(entry).join(" | ")}`;
+	if (entry.method === "input") {
+		const placeholder = (entry.request as { placeholder?: unknown }).placeholder;
+		return typeof placeholder === "string" && placeholder ? `${base} (placeholder: ${placeholder})` : base;
+	}
+	const prefill = (entry.request as { prefill?: unknown }).prefill;
+	return typeof prefill === "string" && prefill
+		? `${base}; it has a ${prefill.length}-char prefill that a value replaces`
+		: base;
 }
 
 /** Pull the bash command out of a tool's args (`args.command`), or undefined for non-bash tools. */

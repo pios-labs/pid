@@ -164,6 +164,31 @@ describe("ApprovalRouter — approve / deny", () => {
 		router.register("svc", TRUSTING);
 		await expect(router.approve("nope")).rejects.toThrow(/no pending approval/);
 	});
+
+	it("rejects approving a select with no value, listing options, and keeps it pending", async () => {
+		const { router, sends } = makeRouter();
+		router.register("svc", TRUSTING);
+		router.handleEvent("svc", { type: "extension_ui_request", id: "r1", method: "select", options: ["staging", "prod"] });
+		await expect(router.approve("r1")).rejects.toThrow(/needs a value.*staging \| prod/);
+		expect(sends).toHaveLength(0);
+		expect(router.list()).toHaveLength(1); // still pending for a corrected retry, not dropped
+	});
+
+	it("rejects a select value outside the options (fail-closed) and keeps it pending", async () => {
+		const { router, sends } = makeRouter();
+		router.register("svc", TRUSTING);
+		router.handleEvent("svc", { type: "extension_ui_request", id: "r1", method: "select", options: ["staging", "prod"] });
+		await expect(router.approve("r1", "production")).rejects.toThrow(/not a valid option/);
+		expect(sends).toHaveLength(0);
+		expect(router.list()).toHaveLength(1);
+	});
+
+	it("requires a value for input, surfacing the placeholder", async () => {
+		const { router } = makeRouter();
+		router.register("svc", TRUSTING);
+		router.handleEvent("svc", { type: "extension_ui_request", id: "r1", method: "input", placeholder: "v1.2.3" });
+		await expect(router.approve("r1")).rejects.toThrow(/needs a value \(placeholder: v1\.2\.3\)/);
+	});
 });
 
 describe("ApprovalRouter — timeouts", () => {
