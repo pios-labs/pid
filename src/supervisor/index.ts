@@ -35,6 +35,17 @@ export interface ServiceRecord {
 	lastFailure?: { at: string; signature: string };
 }
 
+/**
+ * The status-command view of a service: the runtime record plus the live count of in-flight
+ * approval dialogs (ADR 0006 fork-3). `pendingApprovals` is **derived on read** from the approval
+ * router — never a stored field on `ServiceRecord` (the inbox is the source of truth; a stored tally
+ * would only drift). Returned by `status()`/`list()` so both the human render and `--json` carry it
+ * from the one payload, mirroring pi's "same data, many renderings" (`--mode text|json`).
+ */
+export interface ServiceStatus extends ServiceRecord {
+	pendingApprovals: number;
+}
+
 export interface SupervisorOptions {
 	state: StateStore;
 	services: LoadResult;
@@ -114,15 +125,25 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		}
 	}
 
-	list(): ServiceRecord[] {
-		return [...this.services.values()];
+	list(): ServiceStatus[] {
+		const pending = this.pendingCounts();
+		return [...this.services.values()].map((record) => ({ ...record, pendingApprovals: pending.get(record.name) ?? 0 }));
 	}
 
-	status(name?: string): ServiceRecord | ServiceRecord[] {
+	status(name?: string): ServiceStatus | ServiceStatus[] {
 		if (!name) return this.list();
 		const record = this.services.get(name);
 		if (!record) throw new Error(`unknown service: ${name}`);
-		return record;
+		return { ...record, pendingApprovals: this.pendingCounts().get(name) ?? 0 };
+	}
+
+	/** Per-service count of in-flight approvals, derived live from the router (never stored; ADR 0006). */
+	private pendingCounts(): Map<string, number> {
+		const counts = new Map<string, number>();
+		for (const approval of this.approvals.list()) {
+			counts.set(approval.service, (counts.get(approval.service) ?? 0) + 1);
+		}
+		return counts;
 	}
 
 	async start(name: string): Promise<{ name: string; state: ServiceState }> {
