@@ -1,10 +1,22 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import type { PendingApproval } from "./approvals/router.js";
-import { formatApprovalsTable, formatApproveReceipt, formatDenyReceipt } from "./cli-render.js";
+import {
+	formatActionReceipt,
+	formatApprovalsTable,
+	formatApproveReceipt,
+	formatDenyReceipt,
+	formatStatus,
+} from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
 import { parseResumeFlags, type ResumeFlags } from "./services/resume-args.js";
+import type { ServiceStatus } from "./supervisor/index.js";
+
+/** Narrow the action-command payload (`{ name, state }`) for the receipt's `→ <state>`. */
+function landedState(data: unknown): string | undefined {
+	return (data as { state?: string } | undefined)?.state;
+}
 
 const VERSION = "0.0.1";
 
@@ -23,36 +35,49 @@ program
 	.command("list")
 	.alias("ls")
 	.description("List all services")
-	.action(async () => {
-		await callDaemon({ cmd: "list" });
+	.option("--json", "output the raw JSON payload instead of the table")
+	.action(async (opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "list" }, opts.json, (data) => formatStatus(data as ServiceStatus[], Date.now()));
 	});
 
 program
 	.command("status [name]")
 	.description("Show status for one or all services")
-	.action(async (name?: string) => {
-		await callDaemon({ cmd: "status", name });
+	.option("--json", "output the raw JSON payload instead of the rendered view")
+	.action(async (name: string | undefined, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "status", name }, opts.json, (data) =>
+			formatStatus(data as ServiceStatus | ServiceStatus[], Date.now()),
+		);
 	});
 
 program
 	.command("start <name>")
 	.description("Start a stopped service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "start", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "start", name }, opts.json, (data) =>
+			formatActionReceipt("started", name, landedState(data)),
+		);
 	});
 
 program
 	.command("stop <name>")
 	.description("Stop a running service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "stop", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "stop", name }, opts.json, (data) =>
+			formatActionReceipt("stopped", name, landedState(data)),
+		);
 	});
 
 program
 	.command("restart <name>")
 	.description("Restart a service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "restart", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "restart", name }, opts.json, (data) =>
+			formatActionReceipt("restarted", name, landedState(data)),
+		);
 	});
 
 program
@@ -63,7 +88,8 @@ program
 	.option("--daily-tokens <n|none>", 'set the daily token cap this window, or "none" to lift it')
 	.option("--unlimited", "lift all caps for the current window")
 	.option("--reset", "zero the current budget windows and resume under the configured caps")
-	.action(async (name: string, opts: ResumeFlags) => {
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: ResumeFlags & { json?: boolean }) => {
 		let parsed: ReturnType<typeof parseResumeFlags>;
 		try {
 			parsed = parseResumeFlags(opts);
@@ -72,21 +98,25 @@ program
 			process.exitCode = 1;
 			return;
 		}
-		await callDaemon({ cmd: "resume", name, spec: parsed.spec, reset: parsed.reset });
+		await renderDaemon({ cmd: "resume", name, spec: parsed.spec, reset: parsed.reset }, opts.json, (data) =>
+			formatActionReceipt("resumed", name, landedState(data)),
+		);
 	});
 
 program
 	.command("enable <name>")
 	.description("Enable a service for auto-start on daemon boot")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "enable", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "enable", name }, opts.json, () => formatActionReceipt("enabled", name));
 	});
 
 program
 	.command("disable <name>")
 	.description("Disable auto-start for a service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "disable", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "disable", name }, opts.json, () => formatActionReceipt("disabled", name));
 	});
 
 program
@@ -161,15 +191,17 @@ budget
 program
 	.command("quarantine <name>")
 	.description("Manually quarantine a service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "quarantine", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "quarantine", name }, opts.json, () => formatActionReceipt("quarantined", name));
 	});
 
 program
 	.command("unquarantine <name>")
 	.description("Lift quarantine; allow restart")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "unquarantine", name });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "unquarantine", name }, opts.json, () => formatActionReceipt("unquarantined", name));
 	});
 
 async function callDaemon(req: Request): Promise<void> {

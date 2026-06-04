@@ -75,6 +75,28 @@ The **info** commands gain the most (they're human-scanned and their raw dumps a
 - Tests: pure formatter tests (pinned sample input → expected string), mirroring the existing pure-core tests. The `--json` path reproduces today's behavior, so it is regression-safe.
 - pid is pre-1.0; the JSON **envelope is not changing** (it is already what the daemon returns), so `--json` consumers see today's data. Only the default *human* output is new.
 
+## Amendment (2026-06-04, D2(a)+(c) implementation)
+
+Implementing fork-3 surfaced a tension between two clauses of this ADR: fork-3 requires the
+`pending_approvals` count "in `--json`", while Consequences says "the JSON envelope is not
+changing". Resolved (Steven, BAP fork-1): the count is a **small additive field** on the status
+payload, not an envelope change. `Supervisor.status()`/`list()` now return a
+`ServiceStatus extends ServiceRecord { pendingApprovals: number }` **view** — the count is computed
+live from the approval router on every read (never stored on `ServiceRecord`), so `--json` and the
+human render derive from one payload (preserving the "same data, many renderings" invariant this ADR
+is built on). The join lives in the supervisor (the composition root that already owns the records
+*and* the router), not in the daemon dispatch (kept thin) nor the CLI (which would split the human
+and machine views). `--json` consumers see today's data **plus** `pendingApprovals` — additive, no
+removals or renames.
+
+Layout (fork-2, the "pixels" this ADR deferred): `list` and `status`-all share a lean
+NAME/STATE/PID/UPTIME/PENDING table; `status <name>` is a labeled detail block with a `why` line
+gated on `lastFailure` (so a crash/quarantine shows its signature; a budget `paused` does **not**
+add a why line — that honours fork-3's "count only, no budget-spend block on status"). Action
+commands print a `✓ <verb> <name> [→ <state>]` receipt, mirroring D1's approve/deny receipts. The
+not-yet-implemented stubs (`logs`/`tail`/`reload`/`budget show|reset`) stay on the old JSON-dump path
+until their features land — they are out of this render pass's scope.
+
 ## Revisit when
 
 - The dashboard / index lands → confirm `--json` is the CLI-side ingestion contract and keep it from drifting from the daemon's structured `data` and the log envelope (ADR 0005).

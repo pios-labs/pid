@@ -9,6 +9,66 @@
  */
 
 import type { PendingApproval } from "./approvals/router.js";
+import type { ServiceStatus } from "./supervisor/index.js";
+
+/**
+ * `pid status [name]`: a detail block for one service, or the shared overview table for all.
+ * Branches on the daemon's payload shape — single record vs array — so one renderer serves both
+ * `status <name>` and `status` / `list`.
+ */
+export function formatStatus(data: ServiceStatus | ServiceStatus[], now: number): string {
+	return Array.isArray(data) ? formatServiceTable(data, now) : formatServiceDetail(data, now);
+}
+
+/** `pid list` / `pid status` (all): the lean NAME/STATE/PID/UPTIME/PENDING overview + a count footer. */
+export function formatServiceTable(services: ServiceStatus[], now: number): string {
+	if (services.length === 0) return "No services.";
+	const rows = services.map((s) => [
+		s.name,
+		s.state,
+		s.pid === undefined ? "-" : String(s.pid),
+		s.startedAt ? formatAge(now - Date.parse(s.startedAt)) : "-",
+		String(s.pendingApprovals),
+	]);
+	return `${table(["NAME", "STATE", "PID", "UPTIME", "PENDING"], rows)}\n\n${count(services.length, "service")}`;
+}
+
+/** `pid status <name>`: a labeled detail block. The `why` line shows only when a failure is recorded. */
+export function formatServiceDetail(s: ServiceStatus, now: number): string {
+	const lines = [s.name, `  state    ${s.state}`];
+	if (s.pid !== undefined) lines.push(`  pid      ${s.pid}`);
+	if (s.startedAt)
+		lines.push(`  uptime   ${formatAge(now - Date.parse(s.startedAt))}  (since ${formatTime(s.startedAt)})`);
+	const model = s.config.model ? modelLabel(s.config.model) : "";
+	lines.push(`  command  ${s.config.command}${model ? `  (model: ${model})` : ""}`);
+	lines.push(`  pending  ${count(s.pendingApprovals, "approval")}`);
+	if (s.lastFailure) {
+		const prefix = s.state === "quarantined" ? "crash loop: " : "";
+		lines.push(`  why      ${prefix}${s.lastFailure.signature}  (${formatTime(s.lastFailure.at)})`);
+	}
+	return lines.join("\n");
+}
+
+/** Action-command receipt (`start`/`stop`/`resume`/…), mirroring D1's approve/deny receipts. */
+export function formatActionReceipt(verb: string, name: string, state?: string): string {
+	return state ? `✓ ${verb} ${name} → ${state}` : `✓ ${verb} ${name}`;
+}
+
+/** `<n> thing` / `<n> things` — pluralise an English count noun. */
+function count(n: number, noun: string): string {
+	return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/** A service's configured model as `provider/id`, with an optional `thinking:<level>` suffix. */
+function modelLabel(m: { provider?: string; id?: string; thinking?: string }): string {
+	const base = [m.provider, m.id].filter(Boolean).join("/");
+	return m.thinking ? `${base || "?"} thinking:${m.thinking}` : base;
+}
+
+/** A UTC ISO timestamp as a friendly `YYYY-MM-DD HH:MM UTC` (timestamps are always our own toISOString()). */
+function formatTime(iso: string): string {
+	return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
 
 /** `pid approvals`: the pending-inbox table (ID / SERVICE / METHOD / AGE / PROMPT), or an empty note. */
 export function formatApprovalsTable(entries: PendingApproval[], now: number): string {
