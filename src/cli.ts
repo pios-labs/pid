@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import type { PendingApproval } from "./approvals/router.js";
+import { formatApprovalsTable, formatApproveReceipt, formatDenyReceipt } from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
 import { parseResumeFlags, type ResumeFlags } from "./services/resume-args.js";
@@ -113,24 +115,33 @@ program
 program
 	.command("approvals")
 	.description("List pending approval requests")
-	.action(async () => {
-		await callDaemon({ cmd: "approvals" });
+	.option("--json", "output the raw JSON payload instead of the table")
+	.action(async (opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "approvals" }, opts.json, (data) =>
+			formatApprovalsTable(data as PendingApproval[], Date.now()),
+		);
 	});
 
 program
 	.command("approve <id>")
-	.description("Approve a pending request")
-	.option("--value <value>", "value for select/input requests")
-	.action(async (id: string, opts: { value?: string }) => {
-		await callDaemon({ cmd: "approve", id, value: opts.value });
+	.description("Approve a pending request; supply --value for select/input/editor")
+	.option("--value <value>", "value for select/input/editor requests")
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (id: string, opts: { value?: string; json?: boolean }) => {
+		await renderDaemon({ cmd: "approve", id, value: opts.value }, opts.json, (data) =>
+			formatApproveReceipt(data as PendingApproval, opts.value),
+		);
 	});
 
 program
 	.command("deny <id>")
 	.description("Deny a pending request")
 	.option("--reason <reason>", "reason for denial")
-	.action(async (id: string, opts: { reason?: string }) => {
-		await callDaemon({ cmd: "deny", id, reason: opts.reason });
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (id: string, opts: { reason?: string; json?: boolean }) => {
+		await renderDaemon({ cmd: "deny", id, reason: opts.reason }, opts.json, (data) =>
+			formatDenyReceipt(data as PendingApproval),
+		);
 	});
 
 const budget = program.command("budget").description("Inspect or reset service budgets");
@@ -170,6 +181,28 @@ async function callDaemon(req: Request): Promise<void> {
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		process.stderr.write(`pid: ${message}\n`);
+		process.exitCode = 1;
+	}
+}
+
+/**
+ * Send a command and present the result the ADR-0006 way: a daemon error → plain stderr + exit 1;
+ * `--json` → the raw `data` payload; otherwise the human-readable `render(data)`. The seed of the
+ * convention D2 generalises across every command.
+ */
+async function renderDaemon(req: Request, json: boolean | undefined, render: (data: unknown) => string): Promise<void> {
+	try {
+		const socket = await connect();
+		const response = await sendCommand(socket, req);
+		socket.end();
+		if (!response.ok) {
+			process.stderr.write(`pid: ${response.error}\n`);
+			process.exitCode = 1;
+			return;
+		}
+		process.stdout.write(json ? `${JSON.stringify(response.data, null, 2)}\n` : `${render(response.data)}\n`);
+	} catch (err) {
+		process.stderr.write(`pid: ${err instanceof Error ? err.message : String(err)}\n`);
 		process.exitCode = 1;
 	}
 }

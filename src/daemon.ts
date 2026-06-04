@@ -65,12 +65,15 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 			return supervisor.status(req.name as string);
 		case "unquarantine":
 			return supervisor.unquarantine(req.name as string);
+		case "approvals":
+			return supervisor.listApprovals();
+		case "approve":
+			return supervisor.approveRequest(req.id as string, req.value as string | undefined);
+		case "deny":
+			return supervisor.denyRequest(req.id as string, req.reason as string | undefined);
 		case "logs":
 		case "tail":
 		case "reload":
-		case "approvals":
-		case "approve":
-		case "deny":
 		case "budget_show":
 		case "budget_reset":
 			throw new Error(`not implemented: ${cmd}`);
