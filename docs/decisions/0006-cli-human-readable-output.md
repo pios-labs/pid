@@ -97,6 +97,31 @@ commands print a `✓ <verb> <name> [→ <state>]` receipt, mirroring D1's appro
 not-yet-implemented stubs (`logs`/`tail`/`reload`/`budget show|reset`) stay on the old JSON-dump path
 until their features land — they are out of this render pass's scope.
 
+## Amendment (2026-06-04, D2(b)+(d): interactive value entry + short ids)
+
+The picker/line-prompt/`$EDITOR` mechanics were already settled in fork-2 above; building them
+surfaced three points fork-2 hadn't written down (decided with Steven, BAP):
+
+- **New module `src/cli-prompt.ts`.** Interactive entry does real I/O (`readline`/`spawn`/`fs`), so
+  it can't live in the deliberately-pure `cli-render.ts`. A sibling module holds it, mirroring pi's
+  own separation into `extension-{selector,input,editor}` components. Pure `resolveApprovalId` lives
+  here too (unit-tested); the prompts do I/O and are TTY-gated.
+- **Short-id resolution is client-side.** The router keeps speaking full UUIDs (the stable machine
+  contract); the CLI resolves a typed prefix → the unique full id (exact wins; ambiguous/none throw
+  a listing error), exactly the human↔machine translation this ADR already assigns to the CLI. The
+  inbox table and receipts display the 8-char `shortId`. `approve` without `--value` already fetches
+  the inbox to prompt, so resolution is free there; `deny`/`approve --value` do one cheap fetch.
+  Rejected server-side resolution (a router change) — its only gain (no extra fetch) didn't justify
+  expanding the router's contract, and the TOCTOU it would "fix" is a non-issue at human pace.
+- **Cancelling value entry leaves the request pending** (Ctrl-C / EOF / `q` / a non-zero editor
+  exit): the CLI sends nothing and exits non-zero. Denying stays a separate explicit action — the
+  same reasoning as the router's peek-before-claim (a bad `--value` leaves it pending, never drops
+  it). A non-TTY caller that omits `--value` gets a guard pointing at `--value` rather than a hang.
+  `--json` is the machine path and never prompts.
+
+The daemon, socket protocol, and router are unchanged by D2(b)+(d) — all of it is client-side over
+the existing `approvals`/`approve`/`deny` commands and the unchanged `--value` floor.
+
 ## Revisit when
 
 - The dashboard / index lands → confirm `--json` is the CLI-side ingestion contract and keep it from drifting from the daemon's structured `data` and the log envelope (ADR 0005).

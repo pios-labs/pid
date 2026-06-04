@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import type { PendingApproval } from "./approvals/router.js";
+import { promptValue, resolveApprovalId, ValueEntryCancelled } from "./cli-prompt.js";
 import {
 	formatActionReceipt,
 	formatApprovalsTable,
@@ -16,6 +17,23 @@ import type { ServiceStatus } from "./supervisor/index.js";
 /** Narrow the action-command payload (`{ name, state }`) for the receipt's `→ <state>`. */
 function landedState(data: unknown): string | undefined {
 	return (data as { state?: string } | undefined)?.state;
+}
+
+/** The message of an unknown thrown value, for a plain stderr line. */
+function errMsg(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/** Fetch the pending-approval inbox (one round-trip), for client-side id resolution and value entry. */
+async function fetchApprovals(): Promise<PendingApproval[]> {
+	const socket = await connect();
+	try {
+		const res = await sendCommand(socket, { cmd: "approvals" });
+		if (!res.ok) throw new Error(res.error);
+		return res.data as PendingApproval[];
+	} finally {
+		socket.end();
+	}
 }
 
 const VERSION = "0.0.1";
@@ -154,22 +172,47 @@ program
 
 program
 	.command("approve <id>")
-	.description("Approve a pending request; supply --value for select/input/editor")
-	.option("--value <value>", "value for select/input/editor requests")
+	.description("Approve a pending request (id or unique prefix); prompts for a value if needed")
+	.option("--value <value>", "value for select/input/editor (skips the interactive prompt)")
 	.option("--json", "output the raw JSON payload instead of a receipt")
 	.action(async (id: string, opts: { value?: string; json?: boolean }) => {
-		await renderDaemon({ cmd: "approve", id, value: opts.value }, opts.json, (data) =>
-			formatApproveReceipt(data as PendingApproval, opts.value),
+		let fullId: string;
+		let value = opts.value;
+		try {
+			const entry = resolveApprovalId(id, await fetchApprovals());
+			fullId = entry.id;
+			// Gather a value interactively when one is needed and none was supplied. --json is the
+			// machine path: never prompt — let the daemon's --value floor reject a missing value.
+			if (value === undefined && entry.method !== "confirm" && !opts.json) {
+				value = await promptValue(entry);
+			}
+		} catch (err) {
+			process.stderr.write(
+				`pid: ${err instanceof ValueEntryCancelled ? `cancelled — '${id}' still pending` : errMsg(err)}\n`,
+			);
+			process.exitCode = 1;
+			return;
+		}
+		await renderDaemon({ cmd: "approve", id: fullId, value }, opts.json, (data) =>
+			formatApproveReceipt(data as PendingApproval, value),
 		);
 	});
 
 program
 	.command("deny <id>")
-	.description("Deny a pending request")
+	.description("Deny a pending request (id or unique prefix)")
 	.option("--reason <reason>", "reason for denial")
 	.option("--json", "output the raw JSON payload instead of a receipt")
 	.action(async (id: string, opts: { reason?: string; json?: boolean }) => {
-		await renderDaemon({ cmd: "deny", id, reason: opts.reason }, opts.json, (data) =>
+		let fullId: string;
+		try {
+			fullId = resolveApprovalId(id, await fetchApprovals()).id;
+		} catch (err) {
+			process.stderr.write(`pid: ${errMsg(err)}\n`);
+			process.exitCode = 1;
+			return;
+		}
+		await renderDaemon({ cmd: "deny", id: fullId, reason: opts.reason }, opts.json, (data) =>
 			formatDenyReceipt(data as PendingApproval),
 		);
 	});

@@ -73,19 +73,34 @@ function formatTime(iso: string): string {
 /** `pid approvals`: the pending-inbox table (ID / SERVICE / METHOD / AGE / PROMPT), or an empty note. */
 export function formatApprovalsTable(entries: PendingApproval[], now: number): string {
 	if (entries.length === 0) return "No pending approvals.";
-	const rows = entries.map((e) => [e.id, e.service, e.method, formatAge(now - Date.parse(e.receivedAt)), promptText(e)]);
+	const rows = entries.map((e) => [
+		shortId(e.id),
+		e.service,
+		e.method,
+		formatAge(now - Date.parse(e.receivedAt)),
+		promptText(e),
+	]);
 	return table(["ID", "SERVICE", "METHOD", "AGE", "PROMPT"], rows);
 }
 
 /** `pid approve`: a one-line receipt. Shows the supplied value for non-confirm methods. */
 export function formatApproveReceipt(entry: PendingApproval, value?: string): string {
 	const note = entry.method === "confirm" || value === undefined ? "" : `  (value: ${valueSummary(value)})`;
-	return `✓ approved ${entry.id} → ${entry.service}${note}`;
+	return `✓ approved ${shortId(entry.id)} → ${entry.service}${note}`;
 }
 
 /** `pid deny`: a one-line receipt. */
 export function formatDenyReceipt(entry: PendingApproval): string {
-	return `✓ denied ${entry.id} → ${entry.service}`;
+	return `✓ denied ${shortId(entry.id)} → ${entry.service}`;
+}
+
+/**
+ * Display form of a request id: the first 8 chars. pi's ids are random UUIDs, unique well within
+ * that, so the inbox shows the short form and the operator types just a prefix — resolution
+ * (`resolveApprovalId`) accepts any unambiguous prefix, exactly like a git short SHA.
+ */
+export function shortId(id: string): string {
+	return id.slice(0, 8);
 }
 
 /** Short, scannable prompt for the table: the dialog's title, falling back to its message. */
