@@ -12,7 +12,14 @@ interface PersistedState {
 
 const DEFAULT_STATE: PersistedState = { version: 1, enabled: [], quarantined: [] };
 
+/** Process-global counter for temp filenames, so two stores in one process never collide (S1). */
+let tmpCounter = 0;
+
 export class StateStore {
+	/** Serializes writes from this store so concurrent state-changing ops can't interleave their
+	 *  write→rename and clobber state.json (mirrors the per-service queue in governor/crash.ts). */
+	private queue: Promise<void> = Promise.resolve();
+
 	private constructor(
 		private readonly path: string,
 		private state: PersistedState,
@@ -61,9 +68,22 @@ export class StateStore {
 		await this.persist();
 	}
 
-	private async persist(): Promise<void> {
-		const tmp = `${this.path}.tmp`;
-		await writeFile(tmp, JSON.stringify(this.state, null, 2), "utf8");
+	private persist(): Promise<void> {
+		// Snapshot now: state objects are replaced wholesale by the setters, so this captures the
+		// exact state to write even though the write runs later in the queue.
+		const snapshot = this.state;
+		const run = this.queue.then(() => this.write(snapshot));
+		// Keep the chain alive even if this write rejects, so one failure can't poison later persists;
+		// the caller still observes the rejection through `run`.
+		this.queue = run.catch(() => {});
+		return run;
+	}
+
+	private async write(state: PersistedState): Promise<void> {
+		// Unique temp name per write (pid + monotonic counter) so concurrent writers — even two stores
+		// sharing one PID_HOME — never share a temp file and lose a rename to ENOENT (S1).
+		const tmp = `${this.path}.${process.pid}.${++tmpCounter}.tmp`;
+		await writeFile(tmp, JSON.stringify(state, null, 2), "utf8");
 		await rename(tmp, this.path);
 	}
 }

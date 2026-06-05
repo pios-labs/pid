@@ -382,3 +382,29 @@ describe("Supervisor.send", () => {
 		await expect(sup.send("stopped-send", { type: "x" })).rejects.toThrow(/not running|not writable/);
 	});
 });
+
+describe("StateStore concurrent persists (snag S1)", () => {
+	it("survives many concurrent persists on one store without an ENOENT rename race", async () => {
+		const store = await StateStore.open();
+		// Fire 20 state-changing ops at once; each calls persist(). Pre-fix these collided on a single
+		// `state.json.tmp` and the losers threw ENOENT on rename.
+		const ops = Array.from({ length: 20 }, (_, i) => store.setEnabled(`svc-${i}`, true));
+		await expect(Promise.all(ops)).resolves.toBeDefined();
+
+		const reloaded = await StateStore.open();
+		expect(await reloaded.getEnabled()).toHaveLength(20);
+	});
+
+	it("survives two stores sharing one PID_HOME persisting concurrently", async () => {
+		// The exact flaky-test shape from the snag: two StateStore instances over one PID_HOME.
+		const [a, b] = await Promise.all([StateStore.open(), StateStore.open()]);
+		const ops = [
+			...Array.from({ length: 15 }, (_, i) => a.setQuarantined(`a-${i}`, true)),
+			...Array.from({ length: 15 }, (_, i) => b.setQuarantined(`b-${i}`, true)),
+		];
+		await expect(Promise.all(ops)).resolves.toBeDefined();
+		// Last-writer-wins across instances means we can't assert the merged set; the contract here is
+		// simply that no write threw — the file is intact and parseable on the next open.
+		await expect(StateStore.open()).resolves.toBeDefined();
+	});
+});
