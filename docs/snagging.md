@@ -14,7 +14,7 @@ Severity: 🔴 correctness/robustness · 🟡 polish/ergonomics · ⚪ nice-to-h
 
 ## Fixed
 
-### ~~S1 🔴 `StateStore.persist()` races on a fixed `.tmp` path~~ — fixed `32a6985`
+### ~~S1 🔴 `StateStore.persist()` races on a fixed `.tmp` path~~ — fixed `f9eb8df`
 
 `src/state/store.ts` `persist()` always writes to `${this.path}.tmp` then `rename()`s it onto `state.json`. Two concurrent `persist()` calls — multiple state-changing ops in flight, or (as in the test suite) two `StateStore` instances sharing one `PID_HOME` — both write the **same** temp file and both rename: the first rename wins and removes the temp, the second hits `ENOENT: rename '…/state.json.tmp' -> '…/state.json'`.
 
