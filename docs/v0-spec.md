@@ -383,12 +383,12 @@ The read path is **daemon-free**: `pid logs`/`pid tail` read the files on disk d
 
 ```
 logs/
-  nightly-tests.jsonl                  # today, live (the documented path)
-  nightly-tests.2026-06-04.jsonl       # yesterday's archive
-  nightly-tests.2026-06-03.jsonl.gz    # older, gzipped
+  nightly-tests.jsonl                     # today, live (the documented path)
+  nightly-tests.2026-06-04.jsonl          # yesterday's archive
+  nightly-tests.2026-06-05T14-12-00.jsonl # a mid-day size-cap archive
 ```
 
-A mid-day, size-triggered roll disambiguates with a full hyphenated timestamp (`<name>.<date>T<hh-mm-ss>.jsonl`, mirroring pi's session-filename idiom). **Retention** keeps the last N days (default ~30; global for now, per-service override deferred); older archives are gzipped then pruned. This is pid-native — pi has no rotation because it segments per session; pid's long-lived services must segment by time.
+A mid-day, size-triggered roll disambiguates with a full hyphenated timestamp (`<name>.<date>T<hh-mm-ss>.jsonl`, mirroring pi's session-filename idiom; a second roll in the same second gets a `-1`/`-2` suffix). **Retention** keeps the last N days (default 30; size cap default 50 MiB; both global for now, per-service override deferred); archives older than the window are pruned. This is pid-native — pi has no rotation because it segments per session; pid's long-lived services must segment by time. *(Gzip of aged archives is a planned follow-up — deferred so the reader needn't gunzip transparently yet.)*
 
 **Reading across segments.** A reader stitches archives + the live file in date order into one timeline; `--since`/`--type`/`--source` filter on the **envelope `ts`/`type`/`source`** (the envelope `ts` is the only reliable per-line clock — most pi stream events are unstamped). `-f` follows the live file and reopens across a roll (`tail -F` semantics). There is **no index**: filtered history is a streaming scan kept cheap by rotation; live follow is `fs.watch` + incremental read (O(new bytes)).
 

@@ -1,12 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type ApprovalActions, ApprovalRouter, type PendingApproval } from "../approvals/router.js";
 import { BudgetStore, type OverrideState } from "../budget/store.js";
 import { type BudgetActions, CostGovernor } from "../governor/cost.js";
 import { type CrashActions, CrashDetector } from "../governor/crash.js";
+import { RotatingLogWriter } from "../log/writer.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
@@ -58,7 +56,7 @@ export interface SupervisorOptions {
  */
 interface RunningProcess {
 	child: ChildProcess;
-	log: WriteStream;
+	log: RotatingLogWriter;
 	stderr: string;
 	/** Detaches the stdout JSONL reader; called before `log.end()` so a late end-flush can't write after close. */
 	detachReader: () => void;
@@ -168,8 +166,9 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		const args = buildPiArgs(record.config);
 		const cwd = record.config.cwd ? expandTilde(record.config.cwd) : undefined;
 
-		await mkdir(logsDir(), { recursive: true });
-		const log = createWriteStream(join(logsDir(), `${name}.jsonl`), { flags: "a" });
+		// Rotation-aware chronicle writer (ADR 0008): live file stays `logs/<name>.jsonl`; completed
+		// days (and any size-cap breach) roll to dated archives, with retention pruning old ones.
+		const log = await RotatingLogWriter.open(logsDir(), name);
 
 		const child = spawn(record.config.command, args, {
 			cwd,
@@ -538,8 +537,8 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		const running = this.running.get(name);
 		if (!running || running.child !== child) return;
 		this.running.delete(name);
-		// Detach the reader before ending the log: the stdout `end` event can flush a final
-		// buffered line concurrently with exit, and writing to an ended WriteStream throws.
+		// Detach the reader before ending the log: the stdout `end` event can flush a final buffered
+		// line concurrently with exit, so we close the reader first (the writer also no-ops post-end).
 		running.detachReader();
 		running.log.end();
 
