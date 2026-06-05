@@ -26,3 +26,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0005](0005-log-envelope.md) — Per-service log envelope: one chronicle schema for pi + pid events — **Accepted**
 - [0006](0006-cli-human-readable-output.md) — Human-readable CLI output by default; `--json` opt-out (the CLI render pass, D2) — **Accepted**
 - [0007](0007-intervention-events.md) — Synthetic intervention events: `pid_quarantine`, `pid_budget_pause`, `pid_budget_resume` — **Accepted**
+- [0008](0008-observability-read-path.md) — Observability read path: daemon-free CLI reader, no index (scan + tail-follow), daily-segment rotation, lean example web dashboard — **Accepted**

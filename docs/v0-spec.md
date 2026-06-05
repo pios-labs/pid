@@ -355,7 +355,7 @@ On approve/deny: `pid` writes the response to the subprocess's stdin, removes th
 
 Two log streams per service:
 
-1. **Event chronicle** (`~/.pi/pid/logs/<name>.jsonl`) — the single source of truth: every event pi emits **plus** pid's own synthetic events, append-only, one ordered replayable timeline. This is the substrate for the planned dashboard (observability mandate — see ADR 0004 "Revisit when"). (Rotation/retention is part of that deliverable; v0 appends without rotation.)
+1. **Event chronicle** (`~/.pi/pid/logs/<name>.jsonl`) — the single source of truth: every event pi emits **plus** pid's own synthetic events, append-only, one ordered replayable timeline. This is the substrate for the dashboard (observability mandate — ADR 0008). The live file keeps this documented path; completed days roll to **dated archives** (below).
 2. **Human log** rendered on demand by `pid logs <name>`. Default view groups by turn:
 
 ```
@@ -374,6 +374,23 @@ Two log streams per service:
 ```
 
 `pid logs <name> --raw` falls back to JSONL. `--turns` is the default view. `-f` follows.
+
+### Reader, rotation & archives (ADR 0008)
+
+The read path is **daemon-free**: `pid logs`/`pid tail` read the files on disk directly (a read needs no supervisor), and the dashboard is just another consumer of the same files / the same `--json` output. The daemon is not involved and not modified.
+
+**Rotation.** The live file is always `logs/<name>.jsonl`. At each **day rollover** (or if it crosses a size safety-cap) its contents roll to a **dated archive**:
+
+```
+logs/
+  nightly-tests.jsonl                  # today, live (the documented path)
+  nightly-tests.2026-06-04.jsonl       # yesterday's archive
+  nightly-tests.2026-06-03.jsonl.gz    # older, gzipped
+```
+
+A mid-day, size-triggered roll disambiguates with a full hyphenated timestamp (`<name>.<date>T<hh-mm-ss>.jsonl`, mirroring pi's session-filename idiom). **Retention** keeps the last N days (default ~30; global for now, per-service override deferred); older archives are gzipped then pruned. This is pid-native — pi has no rotation because it segments per session; pid's long-lived services must segment by time.
+
+**Reading across segments.** A reader stitches archives + the live file in date order into one timeline; `--since`/`--type`/`--source` filter on the **envelope `ts`/`type`/`source`** (the envelope `ts` is the only reliable per-line clock — most pi stream events are unstamped). `-f` follows the live file and reopens across a roll (`tail -F` semantics). There is **no index**: filtered history is a streaming scan kept cheap by rotation; live follow is `fs.watch` + incremental read (O(new bytes)).
 
 ### Log line schema (the chronicle contract)
 
