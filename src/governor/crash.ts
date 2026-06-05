@@ -25,9 +25,11 @@ import type { ServiceConfig } from "../services/schema.js";
 /** The quarantine block as it appears post-parse (threshold + window always present via defaults). */
 export type QuarantineConfig = ServiceConfig["quarantine"];
 
-/** The supervisor capability the detector drives. Implemented by the Supervisor. */
+/** The supervisor capabilities the detector drives. Implemented by the Supervisor. */
 export interface CrashActions {
 	quarantine(name: string): Promise<void>;
+	/** Append a documented `pid_quarantine` event to the service's chronicle (ADR 0005). No-op if not running. */
+	logQuarantine(name: string, data: Record<string, unknown>): void;
 }
 
 /** One recorded failure: when it arrived (ISO) and its signature. */
@@ -164,6 +166,15 @@ export class CrashDetector {
 		const count = t.recent.filter((f) => f.signature === signature).length;
 		if (count < t.config.same_failure_threshold) return;
 		t.quarantined = true;
+		// Log the intervention *before* the quarantine stops the service, while its log stream is
+		// still open (the chronicle is per-running-process; see Supervisor.logQuarantine).
+		this.actions.logQuarantine(name, {
+			signature,
+			count,
+			threshold: t.config.same_failure_threshold,
+			windowSeconds: t.config.window_seconds,
+			by: "crash_detector",
+		});
 		await this.actions.quarantine(name);
 	}
 }

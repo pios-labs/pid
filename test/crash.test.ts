@@ -22,12 +22,16 @@ function agentEnd(stopReason: string | null, willRetry: boolean): unknown {
 // Capturing quarantine action + fixed clock.
 function harness(now: () => number = () => T0) {
 	const quarantined: string[] = [];
+	const logged: Array<{ name: string; data: Record<string, unknown> }> = [];
 	const actions: CrashActions = {
 		quarantine: async (n: string) => {
 			quarantined.push(n);
 		},
+		logQuarantine: (name: string, data: Record<string, unknown>) => {
+			logged.push({ name, data });
+		},
 	};
-	return { quarantined, actions, now };
+	return { quarantined, logged, actions, now };
 }
 
 const config: QuarantineConfig = { same_failure_threshold: 3, window_seconds: 300 };
@@ -101,6 +105,19 @@ describe("CrashDetector", () => {
 		await det.handleEvent("svc", toolEnd("bash", true));
 		expect(h.quarantined).toEqual(["svc"]);
 		expect(det.status("svc")?.quarantined).toBe(true);
+	});
+
+	it("emits one pid_quarantine event (the documented contract) before quarantining", async () => {
+		for (let i = 0; i < 3; i++) await det.handleEvent("svc", toolEnd("bash", true));
+		expect(h.logged).toEqual([
+			{
+				name: "svc",
+				data: { signature: "tool:bash:error", count: 3, threshold: 3, windowSeconds: 300, by: "crash_detector" },
+			},
+		]);
+		// Logged for the chronicle even though it does not re-fire on subsequent failures.
+		await det.handleEvent("svc", toolEnd("bash", true));
+		expect(h.logged).toHaveLength(1);
 	});
 
 	it("counts per-signature: three different failures do not trip", async () => {

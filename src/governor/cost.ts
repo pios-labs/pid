@@ -24,6 +24,10 @@ export type BudgetConfig = NonNullable<ServiceConfig["budget"]>;
 export interface BudgetActions {
 	pause(name: string): Promise<void>;
 	resume(name: string): Promise<void>;
+	/** Append a documented `pid_budget_pause` event to the service's chronicle (ADR 0005). No-op if not running. */
+	logBudgetPause(name: string, data: Record<string, unknown>): void;
+	/** Append a documented `pid_budget_resume` event to the service's chronicle (ADR 0005). No-op if not running. */
+	logBudgetResume(name: string, data: Record<string, unknown>): void;
 }
 
 /** A per-message charge, with the instant to attribute it to (message timestamp, or now). */
@@ -166,6 +170,12 @@ export class CostGovernor implements BudgetActions {
 	resume(name: string): Promise<void> {
 		return this.actions.resume(name);
 	}
+	logBudgetPause(name: string, data: Record<string, unknown>): void {
+		this.actions.logBudgetPause(name, data);
+	}
+	logBudgetResume(name: string, data: Record<string, unknown>): void {
+		this.actions.logBudgetResume(name, data);
+	}
 
 	/** Start tracking a budgeted service. The caller owns opening the BudgetStore. */
 	register(name: string, caps: BudgetConfig, store: BudgetStore): void {
@@ -263,13 +273,17 @@ export class CostGovernor implements BudgetActions {
 		t.paused = false;
 		t.lastBreach = null;
 		await this.actions.resume(name);
+		// The manual `pid resume` path: log after the start so the (now-open) stream captures it.
+		this.actions.logBudgetResume(name, { by: "manual" });
 
 		// If spend already exceeds the new effective caps (e.g. weekly still breached after lifting
-		// daily), re-pause immediately so the surviving guardrail holds.
+		// daily), re-pause immediately so the surviving guardrail holds. The resume/pause pair tells
+		// the whole story in the chronicle ("lifted, but weekly still over → held again").
 		const breached = evaluateBreach(snap, applyOverride(t.caps, snap.override));
 		if (breached.length > 0 && t.caps.on_exceed === "pause") {
 			t.paused = true;
 			t.lastBreach = breached;
+			this.logPause(name, breached);
 			await this.actions.pause(name);
 			this.armResume(name, t, breached);
 		}
@@ -299,8 +313,27 @@ export class CostGovernor implements BudgetActions {
 
 		// pause: stop the service and schedule resume at the reset of the latest breached window.
 		t.paused = true;
+		this.logPause(name, breached);
 		await this.actions.pause(name);
 		this.armResume(name, t, breached);
+	}
+
+	/**
+	 * Emit the documented `pid_budget_pause` intervention event (ADR 0005). Called *before* the
+	 * actual `pause()`/`stop()` so the service's log stream is still open. `resumeAt` matches
+	 * `armResume`'s computation: the latest breached window's reset.
+	 */
+	private logPause(name: string, breached: BreachedCap[]): void {
+		this.actions.logBudgetPause(name, {
+			breached: breached.map((b) => ({
+				cap: b.cap,
+				limit: b.limit,
+				spent: b.spent,
+				windowEnd: b.windowEnd.toISOString(),
+			})),
+			resumeAt: new Date(Math.max(...breached.map((b) => b.windowEnd.getTime()))).toISOString(),
+			by: "governor",
+		});
 	}
 
 	private armResume(name: string, t: Tracked, breached: BreachedCap[]): void {
@@ -319,5 +352,7 @@ export class CostGovernor implements BudgetActions {
 		t.lastBreach = null;
 		t.resumeHandle = null;
 		await this.actions.resume(name);
+		// The automatic window-reset resume: log after the start, so the reopened stream captures it.
+		this.actions.logBudgetResume(name, { by: "timer" });
 	}
 }

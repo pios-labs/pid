@@ -25,3 +25,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0004](0004-approval-router.md) — Approval router: policy model, matching semantics, host-reply path — **Accepted**
 - [0005](0005-log-envelope.md) — Per-service log envelope: one chronicle schema for pi + pid events — **Accepted**
 - [0006](0006-cli-human-readable-output.md) — Human-readable CLI output by default; `--json` opt-out (the CLI render pass, D2) — **Accepted**
+- [0007](0007-intervention-events.md) — Synthetic intervention events: `pid_quarantine`, `pid_budget_pause`, `pid_budget_resume` — **Accepted**

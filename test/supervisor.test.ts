@@ -160,6 +160,18 @@ describe("Supervisor cost-governor integration", () => {
 		expect(rec.state).toBe("paused");
 		expect(rec.pid).toBeUndefined(); // pause stops the process
 
+		// The intervention lands in the real chronicle (observability mandate): a documented
+		// pid_budget_pause line, written before the pause stop while the stream was still open.
+		const logText = await waitForLog(join(tmp, "logs", "spendy.jsonl"), '"type":"pid_budget_pause"');
+		const pause = logText
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l))
+			.find((e) => e.type === "pid_budget_pause");
+		expect(pause.source).toBe("pid");
+		expect(pause.data.by).toBe("governor");
+		expect(pause.data.breached[0].cap).toBe("daily_usd");
+
 		await sup.shutdown();
 	});
 
@@ -223,6 +235,17 @@ describe("Supervisor crash-detector integration", () => {
 
 		// The terminal bit is persisted (ADR 0003) so a restart keeps holding it.
 		expect(await state.getQuarantined()).toContain("crashy");
+
+		// The intervention lands in the real chronicle (observability mandate): a documented
+		// pid_quarantine line, written before the quarantine stop while the stream was still open.
+		const logText = await waitForLog(join(tmp, "logs", "crashy.jsonl"), '"type":"pid_quarantine"');
+		const quar = logText
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l))
+			.find((e) => e.type === "pid_quarantine");
+		expect(quar.source).toBe("pid");
+		expect(quar.data).toMatchObject({ signature: "tool:bash:error", threshold: 3, by: "crash_detector" });
 
 		await sup.shutdown();
 	});

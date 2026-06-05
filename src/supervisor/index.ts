@@ -477,14 +477,39 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	}
 
 	/**
-	 * ApprovalActions: append a documented `pid_approval` event to the service's chronicle (ADR
-	 * 0004 §11 / ADR 0005), enveloped like every other line. No-op if the service isn't running —
-	 * a late resolution after the child exited has no live log stream (and its reply would fail).
+	 * Append a documented `pid_*` synthetic intervention event to the service's chronicle, enveloped
+	 * like every other line (ADR 0005). The single writer behind every consumer's intervention log —
+	 * the approval router, the crash detector, and the cost governor — so all pid interventions land
+	 * in the one ordered, replayable timeline the observability mandate requires.
+	 *
+	 * No-op if the service isn't running: the chronicle is the live `RunningProcess.log` stream, so
+	 * an event for a stopped service has nowhere to go. Consumers therefore log a pause/quarantine
+	 * *before* the stop that fulfils it, and a resume *after* the start — see each call site.
 	 */
-	logApproval(name: string, data: Record<string, unknown>): void {
+	private logPidEvent(name: string, type: string, data: Record<string, unknown>): void {
 		const running = this.running.get(name);
 		if (!running) return;
-		running.log.write(formatPidEvent(name, "pid_approval", data, new Date().toISOString()));
+		running.log.write(formatPidEvent(name, type, data, new Date().toISOString()));
+	}
+
+	/** ApprovalActions: a `pid_approval` event (ADR 0004 §11). */
+	logApproval(name: string, data: Record<string, unknown>): void {
+		this.logPidEvent(name, "pid_approval", data);
+	}
+
+	/** CrashActions: a `pid_quarantine` event (ADR 0003 / 0005). Emitted before the quarantine stop. */
+	logQuarantine(name: string, data: Record<string, unknown>): void {
+		this.logPidEvent(name, "pid_quarantine", data);
+	}
+
+	/** BudgetActions: a `pid_budget_pause` event (ADR 0002 / 0005). Emitted before the pause stop. */
+	logBudgetPause(name: string, data: Record<string, unknown>): void {
+		this.logPidEvent(name, "pid_budget_pause", data);
+	}
+
+	/** BudgetActions: a `pid_budget_resume` event (ADR 0002 / 0005). Emitted after the resume start. */
+	logBudgetResume(name: string, data: Record<string, unknown>): void {
+		this.logPidEvent(name, "pid_budget_resume", data);
 	}
 
 	/** Pending approvals across all services (the `approvals` command; CLI dispatch in increment D). */

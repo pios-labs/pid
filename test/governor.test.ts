@@ -33,12 +33,22 @@ function messageEnd(costUsd: number, tokens: number, at: number = T0): unknown {
 // Test doubles: capturing actions + timers + a fixed clock.
 function harness() {
 	const calls = { pause: [] as string[], resume: [] as string[] };
+	const logged = {
+		pause: [] as Array<{ name: string; data: Record<string, unknown> }>,
+		resume: [] as Array<{ name: string; data: Record<string, unknown> }>,
+	};
 	const actions = {
 		pause: async (n: string) => {
 			calls.pause.push(n);
 		},
 		resume: async (n: string) => {
 			calls.resume.push(n);
+		},
+		logBudgetPause: (name: string, data: Record<string, unknown>) => {
+			logged.pause.push({ name, data });
+		},
+		logBudgetResume: (name: string, data: Record<string, unknown>) => {
+			logged.resume.push({ name, data });
 		},
 	};
 	const armed: Array<{ fn: () => void; ms: number }> = [];
@@ -53,6 +63,7 @@ function harness() {
 	let nowMs = T0;
 	return {
 		calls,
+		logged,
 		actions,
 		armed,
 		timers,
@@ -178,6 +189,17 @@ describe("CostGovernor", () => {
 		// resume at 2026-06-02T00:00Z, now = 2026-06-01T10:00Z -> 14h
 		expect(h.armed).toHaveLength(1);
 		expect(h.armed[0]?.ms).toBe(14 * 3600 * 1000);
+		// One documented pid_budget_pause event, breached array + resumeAt at the daily window end.
+		expect(h.logged.pause).toEqual([
+			{
+				name: svc(),
+				data: {
+					breached: [{ cap: "daily_usd", limit: 1.0, spent: 1.1, windowEnd: "2026-06-02T00:00:00.000Z" }],
+					resumeAt: "2026-06-02T00:00:00.000Z",
+					by: "governor",
+				},
+			},
+		]);
 	});
 
 	it("resuming via the timer clears the paused state and calls resume", async () => {
@@ -192,6 +214,8 @@ describe("CostGovernor", () => {
 		expect(h.calls.resume).toEqual([svc()]);
 		expect(gov.status(svc())?.paused).toBe(false);
 		expect(gov.status(svc())?.breachedCaps).toBeNull();
+		// The automatic window-reset resume is logged as by: "timer".
+		expect(h.logged.resume).toEqual([{ name: svc(), data: { by: "timer" } }]);
 	});
 
 	it("times resume to the weekly window end when only the weekly cap is breached", async () => {
@@ -304,6 +328,10 @@ describe("CostGovernor.override", () => {
 		expect(gov.status(svc())?.paused).toBe(true);
 		expect(h.calls.resume).toEqual([svc()]); // it did resume first
 		expect(h.calls.pause).toHaveLength(2); // then re-paused
+		// The chronicle tells the whole story: a manual resume, then the governor re-holding it.
+		expect(h.logged.resume).toEqual([{ name: svc(), data: { by: "manual" } }]);
+		expect(h.logged.pause).toHaveLength(2); // initial breach + the re-pause
+		expect(h.logged.pause[1]?.data.by).toBe("governor");
 	});
 
 	it("reset clears spend and resumes under the original caps", async () => {

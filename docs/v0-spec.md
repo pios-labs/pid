@@ -396,8 +396,11 @@ Every line in `logs/<name>.jsonl` shares one **envelope** (ADR 0005), so a reade
 |-|-|
 | `pid_parse_error` | `error`, `raw` — a stdout line that wasn't valid JSON (skipped, not fatal) |
 | `pid_approval` | `id`, `phase` (`enqueue`\|`resolve`), `method`, `toolName?`, `command?`, `verdict?` (on enqueue), `decision?` (`auto_approve`\|`approve`\|`deny`\|`expired`), `by?` (`policy`\|`cli`\|`timeout`), `value?` (reply for select/input/editor) |
-| `pid_quarantine` *(planned)* | `signature`, `reason` |
-| `pid_budget_pause` / `pid_budget_resume` *(planned)* | `dimension`, `window`, `limit`, `spent` |
+| `pid_quarantine` | `signature` (the crash-loop signature, e.g. `tool:bash:error`), `count` (occurrences seen in-window), `threshold`, `windowSeconds`, `by` (`crash_detector`) — written just before the quarantine stop |
+| `pid_budget_pause` | `breached[]` (one entry per tripped cap: `{cap, limit, spent, windowEnd}`, `cap` ∈ `daily_usd`\|`weekly_usd`\|`daily_tokens`, `windowEnd` ISO), `resumeAt` (ISO — the latest breached window's reset), `by` (`governor`) — written just before the pause stop |
+| `pid_budget_resume` | `by` (`timer` = automatic at window reset, `manual` = via `pid resume`) — written just after the resume start |
+
+**Sequencing note.** The per-service chronicle is the live process's stdout/synthetic stream, so a `pid_*` line can only be written while the service is *running*. Interventions that **stop** a service (`pid_budget_pause`, `pid_quarantine`) are therefore logged **before** the stop; a **resume** is logged **after** the start. A budget pause re-established on daemon boot (recovering a service already over-cap) writes no line — it restores a prior pause without a run. A manual `pid resume` that immediately re-pauses (a surviving guardrail still breached) emits the pair `pid_budget_resume{by:manual}` then `pid_budget_pause{by:governor}`, so the chronicle tells the whole story. Manual `pid quarantine`/`stop`/`enable` etc. are not yet logged (a service acted on while stopped has no stream; consistent CLI-action logging is deferred).
 
 Example (a denied destructive command — two pi lines then pid's decision):
 
@@ -405,6 +408,13 @@ Example (a denied destructive command — two pi lines then pid's decision):
 {"v":1,"ts":"2026-06-03T03:01:14.002Z","service":"repo-janitor","source":"pi","type":"tool_execution_start","data":{"toolCallId":"tc_2","toolName":"bash","args":{"command":"rm -rf node_modules"}}}
 {"v":1,"ts":"2026-06-03T03:01:14.040Z","service":"repo-janitor","source":"pi","type":"extension_ui_request","data":{"type":"extension_ui_request","id":"req_2","method":"confirm","message":"Run: rm -rf node_modules ?"}}
 {"v":1,"ts":"2026-06-03T03:02:20.119Z","service":"repo-janitor","source":"pid","type":"pid_approval","data":{"id":"req_2","phase":"resolve","decision":"deny","by":"cli","method":"confirm","command":"rm -rf node_modules"}}
+```
+
+Example (a daily-budget pause, then the automatic resume when the window rolls over):
+
+```jsonl
+{"v":1,"ts":"2026-06-04T18:22:09.501Z","service":"nightly-tests","source":"pid","type":"pid_budget_pause","data":{"breached":[{"cap":"daily_usd","limit":10,"spent":10.42,"windowEnd":"2026-06-05T00:00:00.000Z"}],"resumeAt":"2026-06-05T00:00:00.000Z","by":"governor"}}
+{"v":1,"ts":"2026-06-05T00:00:00.118Z","service":"nightly-tests","source":"pid","type":"pid_budget_resume","data":{"by":"timer"}}
 ```
 
 ## Failure modes & recovery
