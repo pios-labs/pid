@@ -356,24 +356,23 @@ On approve/deny: `pid` writes the response to the subprocess's stdin, removes th
 Two log streams per service:
 
 1. **Event chronicle** (`~/.pi/pid/logs/<name>.jsonl`) — the single source of truth: every event pi emits **plus** pid's own synthetic events, append-only, one ordered replayable timeline. This is the substrate for the dashboard (observability mandate — ADR 0008). The live file keeps this documented path; completed days roll to **dated archives** (below).
-2. **Human log** rendered on demand by `pid logs <name>`. Default view groups by turn:
+2. **Human log** rendered on demand by `pid logs <name>` — the lean **line-oriented** view (ADR 0008 fork 2A): one compact line per chronicle event, for fast triage. The rich turn-grouped *transcript* is the example dashboard's job (increment 3), not the CLI's.
 
 ```
-[2026-05-26 22:15:01] turn 1
-  user: Check ~/inbox/ for new files
-  bash: ls ~/inbox/                          (0.2s)
-  bash: cat ~/inbox/report.csv               (0.1s)
-  assistant: Found 1 new file, summarizing...
-  cost: $0.03
-
-[2026-05-26 22:15:08] turn 2
-  bash: write ~/processed/report-summary.md  (0.1s)
-  assistant: Processed report.csv
-  cost: $0.02
-  total cost so far: $0.05 / $2.00 daily
+── 2026-06-06 ──
+08:00:00  bash                  rm -rf node_modules
+08:00:01  extension_ui_request  Run: rm -rf node_modules ?
+08:01:30  pid_approval          resolve  deny  rm -rf node_modules
+08:05:00  pid_budget_pause      daily_usd 10.42/10 → resume 00:00
 ```
 
-`pid logs <name> --raw` falls back to JSONL. `--turns` is the default view. `-f` follows.
+Each line is `HH:MM:SS  <label>  <summary>` (label = a tool's name for tool events, else the event type; a `── <date> ──` separator marks day changes). Flags:
+
+- `--raw` — emit the JSONL chronicle verbatim instead (the machine-readable form; pipes to `jq`).
+- `-f, --follow` — print history, then follow the live file (`tail -F`: reopens across a midnight/size roll).
+- `--since <30m|2h|7d|ISO>`, `--type <event-type>`, `--source <pi|pid>` — filter on the envelope (`ts`/`type`/`source`).
+
+`pid tail` (all-service live multiplex) is the same line view across every running service, prefixed by name (increment 2b).
 
 ### Reader, rotation & archives (ADR 0008)
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { join } from "node:path";
 import { Command } from "commander";
 import type { PendingApproval } from "./approvals/router.js";
 import { promptValue, resolveApprovalId, ValueEntryCancelled } from "./cli-prompt.js";
@@ -10,9 +11,22 @@ import {
 	formatStatus,
 } from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
+import { type LogFilter, matchesFilter, parseSince, readChronicle } from "./log/reader.js";
+import { formatLogLine, logDay } from "./log/render.js";
+import { FileTailer } from "./log/tail.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
 import { parseResumeFlags, type ResumeFlags } from "./services/resume-args.js";
 import type { ServiceStatus } from "./supervisor/index.js";
+import type { LogEnvelope } from "./util/log.js";
+import { logsDir } from "./util/paths.js";
+
+interface LogsFlags {
+	follow?: boolean;
+	raw?: boolean;
+	since?: string;
+	type?: string;
+	source?: string;
+}
 
 /** Narrow the action-command payload (`{ name, state }`) for the receipt's `→ <state>`. */
 function landedState(data: unknown): string | undefined {
@@ -139,11 +153,14 @@ program
 
 program
 	.command("logs <name>")
-	.description("Show service logs")
-	.option("-f, --follow", "follow log output")
-	.option("--raw", "show raw JSONL instead of turn-grouped view")
-	.action(async (name: string, opts: { follow?: boolean; raw?: boolean }) => {
-		await callDaemon({ cmd: "logs", name, follow: opts.follow, raw: opts.raw });
+	.description("Show a service's event log (lifecycle events; --raw for the JSONL chronicle)")
+	.option("-f, --follow", "follow new events as they arrive")
+	.option("--raw", "emit the raw JSONL chronicle instead of the rendered line view")
+	.option("--since <when>", "only events at/after <when> (e.g. 30m, 2h, 7d, or an ISO timestamp)")
+	.option("--type <type>", "only events of this type (e.g. tool_execution_start, pid_approval)")
+	.option("--source <pi|pid>", "only events from this source")
+	.action(async (name: string, opts: LogsFlags) => {
+		await runLogs(name, opts);
 	});
 
 program
@@ -247,6 +264,82 @@ program
 		await renderDaemon({ cmd: "unquarantine", name }, opts.json, () => formatActionReceipt("unquarantined", name));
 	});
 
+/** Build the chronicle filter from `pid logs` flags; throws on a bad `--source`/`--since`. */
+function buildLogFilter(opts: LogsFlags): LogFilter {
+	const filter: LogFilter = {};
+	if (opts.since) filter.since = parseSince(opts.since, new Date());
+	if (opts.type) filter.type = opts.type;
+	if (opts.source) {
+		if (opts.source !== "pi" && opts.source !== "pid") {
+			throw new Error(`invalid --source: "${opts.source}" (expected "pi" or "pid")`);
+		}
+		filter.source = opts.source;
+	}
+	return filter;
+}
+
+/**
+ * `pid logs <name>` — read the service's chronicle (archives + live, stitched) directly off disk
+ * (ADR 0008, daemon-free), rendering the lean line view (or raw JSONL with `--raw`). With `-f`, keep
+ * following the live file from its current end after printing history.
+ */
+async function runLogs(name: string, opts: LogsFlags): Promise<void> {
+	let filter: LogFilter;
+	try {
+		filter = buildLogFilter(opts);
+	} catch (err) {
+		process.stderr.write(`pid: ${errMsg(err)}\n`);
+		process.exitCode = 1;
+		return;
+	}
+
+	const dir = logsDir();
+	let lastDay: string | undefined;
+	let count = 0;
+	const emit = (env: LogEnvelope): void => {
+		count += 1;
+		if (opts.raw) {
+			process.stdout.write(`${JSON.stringify(env)}\n`);
+			return;
+		}
+		const day = logDay(env);
+		if (day !== lastDay) {
+			process.stdout.write(`${count === 1 ? "" : "\n"}── ${day} ──\n`);
+			lastDay = day;
+		}
+		process.stdout.write(`${formatLogLine(env)}\n`);
+	};
+
+	try {
+		await readChronicle(dir, name, filter, emit);
+	} catch (err) {
+		process.stderr.write(`pid: ${errMsg(err)}\n`);
+		process.exitCode = 1;
+		return;
+	}
+
+	if (!opts.follow) {
+		if (count === 0) process.stderr.write(`pid: no matching events for ${name}\n`);
+		return;
+	}
+
+	// Follow: render each new matching line appended to the live file (history above already printed it).
+	const tailer = new FileTailer(join(dir, `${name}.jsonl`), (raw) => {
+		let env: LogEnvelope;
+		try {
+			env = JSON.parse(raw) as LogEnvelope;
+		} catch {
+			return; // skip a corrupt line, keep following
+		}
+		if (matchesFilter(env, filter)) emit(env);
+	});
+	tailer.start();
+	process.on("SIGINT", () => {
+		tailer.stop();
+		process.exit(0);
+	});
+}
+
 async function callDaemon(req: Request): Promise<void> {
 	try {
 		const socket = await connect();
@@ -284,5 +377,11 @@ async function renderDaemon(req: Request, json: boolean | undefined, render: (da
 
 // Guard so the parser/commands can be imported in tests without executing argv (mirrors daemon.ts).
 if (import.meta.url === `file://${process.argv[1]}`) {
+	// A downstream reader closing the pipe early (`pid logs … | head`, `| grep -m1`, quitting `less`)
+	// makes the next stdout write EPIPE; that's a normal end-of-consumer, not an error — exit quietly.
+	process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code === "EPIPE") process.exit(0);
+		throw err;
+	});
 	program.parseAsync(process.argv);
 }
