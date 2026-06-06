@@ -27,3 +27,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0006](0006-cli-human-readable-output.md) — Human-readable CLI output by default; `--json` opt-out (the CLI render pass, D2) — **Accepted**
 - [0007](0007-intervention-events.md) — Synthetic intervention events: `pid_quarantine`, `pid_budget_pause`, `pid_budget_resume` — **Accepted**
 - [0008](0008-observability-read-path.md) — Observability read path: daemon-free CLI reader, no index (scan + tail-follow), daily-segment rotation, lean example web dashboard — **Accepted**
+- [0009](0009-chronicle-event-selection.md) — Chronicle event selection: persist lifecycle events, drop pi's high-frequency streaming frames (`message_update`/`tool_execution_update`) — **Accepted**

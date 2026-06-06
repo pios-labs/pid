@@ -7,6 +7,10 @@
 //   - stdin EOF  -> flush a final event, then exit 0   (pi's shutdown(0) path)
 //   - SIGTERM    -> exit via signal, no final flush     (pi's shutdown(143) path)
 process.stdout.write(`${JSON.stringify({ type: "agent_start" })}\n`);
+// A streaming frame pid must NOT persist to the chronicle (ADR 0009) — onServiceEvent still sees it.
+process.stdout.write(
+	`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi", partial: {} } })}\n`,
+);
 process.stdout.write(
 	`${JSON.stringify({ type: "message_end", message: { role: "assistant", usage: { cost: { total: 0.01 } } } })}\n`,
 );

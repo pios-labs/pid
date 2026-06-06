@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPidEvent, formatPiEvent, LOG_SCHEMA_VERSION } from "../src/util/log.js";
+import { formatPidEvent, formatPiEvent, LOG_SCHEMA_VERSION, persistsToChronicle } from "../src/util/log.js";
 
 const TS = "2026-06-03T03:00:00.000Z";
 
@@ -41,5 +41,33 @@ describe("log envelope", () => {
 		const line = formatPidEvent("svc", "pid_parse_error", { error: "x", raw: "y" }, TS);
 		expect(line.endsWith("\n")).toBe(true);
 		expect(line.slice(0, -1).includes("\n")).toBe(false);
+	});
+});
+
+describe("persistsToChronicle (ADR 0009)", () => {
+	it("drops the high-frequency streaming frames", () => {
+		expect(persistsToChronicle({ type: "message_update" })).toBe(false);
+		expect(persistsToChronicle({ type: "tool_execution_update" })).toBe(false);
+	});
+
+	it("keeps every lifecycle event (and the terminal forms that carry final content)", () => {
+		for (const type of [
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"tool_execution_start",
+			"tool_execution_end",
+			"extension_ui_request",
+			"extension_error",
+		]) {
+			expect(persistsToChronicle({ type })).toBe(true);
+		}
+	});
+
+	it("keeps anything unrecognised — only known noise is suppressed", () => {
+		expect(persistsToChronicle({ type: "some_future_event" })).toBe(true);
+		expect(persistsToChronicle({ noType: 1 })).toBe(true);
+		expect(persistsToChronicle(42)).toBe(true);
 	});
 });

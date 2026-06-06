@@ -48,3 +48,23 @@ export function formatPiEvent(service: string, event: unknown, ts: string): stri
 export function formatPidEvent(service: string, type: string, data: unknown, ts: string): string {
 	return serialize({ v: LOG_SCHEMA_VERSION, ts, service, source: "pid", type, data });
 }
+
+/**
+ * pi stream-event types pid does NOT persist to the chronicle (ADR 0009). These are the high-frequency
+ * streaming frames: `message_update` re-embeds the growing partial message on every token-chunk, and
+ * `tool_execution_update` re-embeds the full accumulated tool output on every chunk — both are O(n²)
+ * bytes over a message/tool, and both are redundant because the terminal `message_end` /
+ * `tool_execution_end` carry the complete final content. Skipping them keeps the chronicle bounded and
+ * one-line-per-real-event without losing any final state.
+ */
+export const STREAMING_FRAME_TYPES: ReadonlySet<string> = new Set(["message_update", "tool_execution_update"]);
+
+/**
+ * Whether a parsed pi event should be appended to the chronicle. Drops the streaming frames above;
+ * keeps every lifecycle event (and anything unrecognised — we only suppress the known noise). The
+ * in-process consumers still receive every event via `onServiceEvent`; only the on-disk log skips these.
+ */
+export function persistsToChronicle(event: unknown): boolean {
+	const type = event && typeof event === "object" ? (event as { type?: unknown }).type : undefined;
+	return typeof type !== "string" || !STREAMING_FRAME_TYPES.has(type);
+}

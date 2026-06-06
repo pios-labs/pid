@@ -407,6 +407,8 @@ Every line in `logs/<name>.jsonl` shares one **envelope** (ADR 0005), so a reade
 
 **`source: "pi"`** — `data` is the pi event **verbatim** (we never rename pi's fields; see pi's `rpc.md` / `agent/src/types.ts` for their shapes, e.g. `tool_execution_start` → `{toolCallId, toolName, args}`). Nesting keeps the pi event recoverable intact and prevents envelope keys from colliding with pi fields.
 
+**Not every pi event is persisted (ADR 0009).** pi's stream includes two high-frequency *streaming frames* — `message_update` (per-token deltas, re-embedding the growing partial message) and `tool_execution_update` (re-embedding the full accumulated tool output each chunk). These are **dropped from the chronicle**: they are O(n²) in size and redundant, because the terminal `message_end` / `tool_execution_end` carry the complete final content. The chronicle is therefore a curated stream of *lifecycle* events, one line per real event — not a byte-for-byte mirror of pi's stdout. (pid's in-process consumers still see every event; only the on-disk log skips these.)
+
 **`source: "pid"`** — `data` is the pid synthetic event's fields, named in pi's idiom (camelCase, `toolName`):
 
 | `type` | `data` fields |

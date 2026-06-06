@@ -68,6 +68,7 @@ describe("Supervisor.start", () => {
 		expect(logText).toContain('"agent_start"');
 		expect(logText).toContain('"message_end"');
 		expect(logText).toContain("pid_parse_error"); // malformed line was caught, not fatal
+		expect(logText).not.toContain('"message_update"'); // streaming frame dropped from the chronicle (ADR 0009)
 
 		// Every line is enveloped (ADR 0005): parse the first and check the documented contract.
 		const env = JSON.parse(logText.trim().split("\n")[0] ?? "{}");
