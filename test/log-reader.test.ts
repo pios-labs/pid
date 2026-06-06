@@ -2,7 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type LogFilter, listSegments, matchesFilter, parseSince, readChronicle } from "../src/log/reader.js";
+import {
+	type LogFilter,
+	listLiveServices,
+	listSegments,
+	matchesFilter,
+	parseSince,
+	readChronicle,
+} from "../src/log/reader.js";
 import type { LogEnvelope } from "../src/util/log.js";
 
 let dir: string;
@@ -45,6 +52,16 @@ describe("listSegments", () => {
 
 	it("returns [] when the logs dir doesn't exist", async () => {
 		expect(await listSegments(join(dir, "nope"), "svc")).toEqual([]);
+	});
+});
+
+describe("listLiveServices", () => {
+	it("lists live files only (not dated archives), sorted by name", async () => {
+		await writeFile(join(dir, "alpha.jsonl"), "");
+		await writeFile(join(dir, "beta.jsonl"), "");
+		await writeFile(join(dir, "alpha.2026-06-04.jsonl"), ""); // archive — excluded
+		await writeFile(join(dir, "beta.2026-06-04T14-12-00.jsonl"), ""); // archive — excluded
+		expect((await listLiveServices(dir)).map((s) => s.name)).toEqual(["alpha", "beta"]);
 	});
 });
 

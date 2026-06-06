@@ -372,7 +372,7 @@ Each line is `HH:MM:SS  <label>  <summary>` (label = a tool's name for tool even
 - `-f, --follow` — print history, then follow the live file (`tail -F`: reopens across a midnight/size roll).
 - `--since <30m|2h|7d|ISO>`, `--type <event-type>`, `--source <pi|pid>` — filter on the envelope (`ts`/`type`/`source`).
 
-`pid tail` (all-service live multiplex) is the same line view across every running service, prefixed by name (increment 2b).
+`pid tail` follows the live stream of **all** services at once — the same line view, each line prefixed by service name, interleaved in arrival order (`--raw`/`--type`/`--source` apply). Daemon-free, one follower per live file.
 
 ### Reader, rotation & archives (ADR 0008)
 

@@ -71,9 +71,8 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 			return supervisor.approveRequest(req.id as string, req.value as string | undefined);
 		case "deny":
 			return supervisor.denyRequest(req.id as string, req.reason as string | undefined);
-		// `logs` (and `tail`, in 2b) read the chronicle files directly client-side (ADR 0008) — never
-		// reach the daemon. `reload`/`budget_*` remain unimplemented daemon ops.
-		case "tail":
+		// `logs`/`tail` read the chronicle files directly client-side (ADR 0008) — never reach the
+		// daemon. `reload`/`budget_*` remain unimplemented daemon ops.
 		case "reload":
 		case "budget_show":
 		case "budget_reset":

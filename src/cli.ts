@@ -11,7 +11,7 @@ import {
 	formatStatus,
 } from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
-import { type LogFilter, matchesFilter, parseSince, readChronicle } from "./log/reader.js";
+import { type LogFilter, listLiveServices, matchesFilter, parseSince, readChronicle } from "./log/reader.js";
 import { formatLogLine, logDay } from "./log/render.js";
 import { FileTailer } from "./log/tail.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
@@ -165,9 +165,12 @@ program
 
 program
 	.command("tail")
-	.description("Live multiplexed event stream from all running services")
-	.action(async () => {
-		await callDaemon({ cmd: "tail" });
+	.description("Follow the live event stream of all services at once, each line tagged by service")
+	.option("--raw", "emit the raw JSONL chronicle instead of the rendered line view")
+	.option("--type <type>", "only events of this type")
+	.option("--source <pi|pid>", "only events from this source")
+	.action(async (opts: LogsFlags) => {
+		await runTail(opts);
 	});
 
 program
@@ -336,6 +339,54 @@ async function runLogs(name: string, opts: LogsFlags): Promise<void> {
 	tailer.start();
 	process.on("SIGINT", () => {
 		tailer.stop();
+		process.exit(0);
+	});
+}
+
+/**
+ * `pid tail` — follow every service's live chronicle at once (ADR 0008), interleaved in arrival order
+ * and prefixed by service name. Daemon-free: one FileTailer per live file. New events only (it's a live
+ * monitor, not history); the set of services is those with a live file when tailing starts.
+ */
+async function runTail(opts: LogsFlags): Promise<void> {
+	let filter: LogFilter;
+	try {
+		filter = buildLogFilter(opts);
+	} catch (err) {
+		process.stderr.write(`pid: ${errMsg(err)}\n`);
+		process.exitCode = 1;
+		return;
+	}
+
+	const services = await listLiveServices(logsDir());
+	if (services.length === 0) {
+		process.stderr.write("pid: no service logs to follow\n");
+		return;
+	}
+	const serviceWidth = Math.max(...services.map((s) => s.name.length));
+
+	const tailers = services.map((s) => {
+		const tailer = new FileTailer(s.path, (raw) => {
+			if (opts.raw) {
+				process.stdout.write(`${raw}\n`); // the envelope already carries `service`
+				return;
+			}
+			let env: LogEnvelope;
+			try {
+				env = JSON.parse(raw) as LogEnvelope;
+			} catch {
+				return;
+			}
+			if (matchesFilter(env, filter)) {
+				process.stdout.write(`${formatLogLine(env, { withService: true, serviceWidth })}\n`);
+			}
+		});
+		tailer.start();
+		return tailer;
+	});
+
+	process.on("SIGINT", () => {
+		for (const tailer of tailers) tailer.stop();
 		process.exit(0);
 	});
 }

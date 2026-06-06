@@ -66,6 +66,23 @@ function archiveSortKey(tail: string): string {
 	return /^\d{4}-\d{2}-\d{2}$/.test(tail) ? `${tail}T99-99-99` : tail;
 }
 
+/**
+ * Every service with a live chronicle file (`<name>.jsonl`), for the `pid tail` multiplex. A live file
+ * is distinguished from a dated archive by the absence of a `.<YYYY-MM-DD>` segment before `.jsonl`.
+ */
+export async function listLiveServices(dir: string): Promise<{ name: string; path: string }[]> {
+	let entries: string[];
+	try {
+		entries = await readdir(dir);
+	} catch {
+		return [];
+	}
+	return entries
+		.filter((f) => f.endsWith(".jsonl") && !/\.\d{4}-\d{2}-\d{2}/.test(f.slice(0, -".jsonl".length)))
+		.map((f) => ({ name: f.slice(0, -".jsonl".length), path: join(dir, f) }))
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
 /** Whether an envelope passes a filter — shared by the history scan and the live follow path. */
 export function matchesFilter(env: LogEnvelope, filter: LogFilter): boolean {
 	if (filter.type && env.type !== filter.type) return false;
