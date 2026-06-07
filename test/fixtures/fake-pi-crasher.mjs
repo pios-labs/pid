@@ -16,7 +16,11 @@ function fail(i) {
 					type: "tool_execution_end",
 					toolCallId: `tc${i}`,
 					toolName: "bash",
-					result: "command not found",
+					// Byte-faithful to real pi: result is an object, not a string (verified in the
+					// errored-turn / s2-tool-call captures — {content:[{type,text}],details}).
+					// deriveSignature reads only isError + toolName, but the fake must never be "more
+					// generous" than real pi — that drift is what hid the original prompt-delivery gap.
+					result: { content: [{ type: "text", text: "command not found" }], details: {} },
 					isError: true,
 				})}\n`,
 			);

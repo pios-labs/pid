@@ -11,8 +11,19 @@ process.stdout.write(`${JSON.stringify({ type: "agent_start" })}\n`);
 process.stdout.write(
 	`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi", partial: {} } })}\n`,
 );
+// A real assistant message_end always carries a full usage block (four token components +
+// totalTokens + cost). Byte-faithful to verification/captures/s1-basic-turn.jsonl so this sample
+// can't drift "thinner" than reality — extractUsage requires all four components + cost.total.
 process.stdout.write(
-	`${JSON.stringify({ type: "message_end", message: { role: "assistant", usage: { cost: { total: 0.01 } } } })}\n`,
+	`${JSON.stringify({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			timestamp: Date.now(),
+			usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } },
+			stopReason: "stop",
+		},
+	})}\n`,
 );
 process.stdout.write("this is not json\n"); // exercises the malformed-line path
 

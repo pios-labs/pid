@@ -3,10 +3,15 @@ import { type CrashActions, CrashDetector, deriveSignature, type QuarantineConfi
 
 const T0 = Date.parse("2026-06-01T10:00:00Z");
 
-// --- event fixtures, shaped exactly as pi emits them (verified @ e56521e3, ADR 0003) ---
+// --- event fixtures, load-bearing fields shaped exactly as real pi emits them ---
+// Verified against real-pi captures: tool_execution_end @ verification/captures/s2-tool-call.jsonl,
+// agent_end (errored turn) @ verification/captures/errored-turn.jsonl. Fields deriveSignature does
+// not read (timestamps, usage, responseId, errorMessage) are elided; the shapes it DOES read match.
 
 function toolEnd(toolName: string, isError: boolean): unknown {
-	return { type: "tool_execution_end", toolCallId: "tc1", toolName, result: "...", isError };
+	// result is an object in real pi ({content,details}), never a bare string — byte-faithful so the
+	// fake can never be "more generous" than reality (the drift class that hid the original gap).
+	return { type: "tool_execution_end", toolCallId: "tc1", toolName, result: { content: [{ type: "text", text: "..." }], details: {} }, isError };
 }
 
 function extensionError(extensionPath: string, event: string): unknown {

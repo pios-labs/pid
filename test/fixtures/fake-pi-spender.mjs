@@ -21,6 +21,10 @@ setTimeout(() => {
 					output: 500,
 					cacheRead: 0,
 					cacheWrite: 0,
+					// totalTokens is present on every real usage object (verified s1-basic-turn capture);
+					// extractUsage sums the four components and ignores it, but the fake mirrors the real
+					// shape so a future consumer reading totalTokens can't be surprised.
+					totalTokens: 1500,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.0 },
 				},
 			},
