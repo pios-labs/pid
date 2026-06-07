@@ -8,6 +8,7 @@ import {
 	formatApprovalsTable,
 	formatApproveReceipt,
 	formatDenyReceipt,
+	formatReloadSummary,
 	formatStatus,
 } from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
@@ -16,7 +17,7 @@ import { formatLogLine, logDay } from "./log/render.js";
 import { FileTailer } from "./log/tail.js";
 import { connect, type Request, sendCommand } from "./protocol/socket.js";
 import { parseResumeFlags, type ResumeFlags } from "./services/resume-args.js";
-import type { ServiceStatus } from "./supervisor/index.js";
+import type { ReloadSummary, ServiceStatus } from "./supervisor/index.js";
 import type { LogEnvelope } from "./util/log.js";
 import { logsDir } from "./util/paths.js";
 
@@ -175,9 +176,10 @@ program
 
 program
 	.command("reload")
-	.description("Re-read service files from disk")
-	.action(async () => {
-		await callDaemon({ cmd: "reload" });
+	.description("Re-read service files from disk and reconcile (never interrupts a running service)")
+	.option("--json", "output the raw JSON payload instead of a summary")
+	.action(async (opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "reload" }, opts.json, (data) => formatReloadSummary(data as ReloadSummary));
 	});
 
 program

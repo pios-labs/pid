@@ -176,7 +176,7 @@ The daemon listens on `~/.pi/pid/pid.sock`. CLI sends one JSON request per line;
 | `disable <name>` | Unmark; does not stop currently running |
 | `logs <name> [-f] [--turns\|--raw]` | View/stream per-service logs |
 | `tail` | Multiplexed live stream from all running services |
-| `reload` | Re-read service files from disk |
+| `reload` | Re-read service files from disk and reconcile the registry (ADR 0010); never interrupts a running service. Returns a summary of what changed. |
 | `approvals` | List pending approval requests |
 | `approve <id> [--value <v>]` | Answer an approval request |
 | `deny <id> [--reason <r>]` | Deny an approval request |
@@ -216,6 +216,22 @@ Response:
   }
 }
 ```
+
+### Reload — service-set reconciliation (ADR 0010)
+
+`reload` re-runs the YAML loader over the services directory and reconciles the new set against the live registry, treating **disk presence as truth**. Its governing rule, mirrored from pi's own `/reload`: **reload reconciles definitions and never interrupts running work — a running service always finishes on the definition it was started with; a changed definition takes effect on its next start.** Invalid files are reported and skipped, leaving prior state untouched.
+
+| A service whose YAML is… | reload does |
+|-|-|
+| newly present | register it → appears in `list`, startable |
+| removed, not running | deregister → gone from the registry |
+| removed, **running** | flag `orphaned`; emit `pid_config_changed`; the live process is **not** killed; no longer startable. Deregistered automatically on its next stop (it has no definition, so it can never restart — every stop is terminal). |
+| modified, not running | update the stored definition → applies on next start |
+| modified, **running** | stage the new definition; the live process keeps its old config; emit `pid_config_changed` and set the `config_changed` status flag ("restart to apply"); **never auto-restart** |
+| unchanged | no-op |
+| runtime state (`enabled`/`quarantined`/budget/approvals) | **preserved** — it lives in `state.json` / `budget/<name>.json`, not the YAML |
+
+`status`/`list` surface the `orphaned` and `config_changed` flags. `reload`'s response is a reconcile summary (`added`/`removed`/`updated`/`orphaned`).
 
 ## Event consumer
 
@@ -417,6 +433,7 @@ Every line in `logs/<name>.jsonl` shares one **envelope** (ADR 0005), so a reade
 | `pid_quarantine` | `signature` (the crash-loop signature, e.g. `tool:bash:error`), `count` (occurrences seen in-window), `threshold`, `windowSeconds`, `by` (`crash_detector`) — written just before the quarantine stop |
 | `pid_budget_pause` | `breached[]` (one entry per tripped cap: `{cap, limit, spent, windowEnd}`, `cap` ∈ `daily_usd`\|`weekly_usd`\|`daily_tokens`, `windowEnd` ISO), `resumeAt` (ISO — the latest breached window's reset), `by` (`governor`) — written just before the pause stop |
 | `pid_budget_resume` | `by` (`timer` = automatic at window reset, `manual` = via `pid resume`) — written just after the resume start |
+| `pid_config_changed` | `change` (`modified` = YAML edited, `removed` = YAML deleted), `by` (`reload`) — written for a **running** service whose definition changed under `pid reload`; the live process keeps its old config until restart (ADR 0010) |
 
 **Sequencing note.** The per-service chronicle is the live process's stdout/synthetic stream, so a `pid_*` line can only be written while the service is *running*. Interventions that **stop** a service (`pid_budget_pause`, `pid_quarantine`) are therefore logged **before** the stop; a **resume** is logged **after** the start. A budget pause re-established on daemon boot (recovering a service already over-cap) writes no line — it restores a prior pause without a run. A manual `pid resume` that immediately re-pauses (a surviving guardrail still breached) emits the pair `pid_budget_resume{by:manual}` then `pid_budget_pause{by:governor}`, so the chronicle tells the whole story. Manual `pid quarantine`/`stop`/`enable` etc. are not yet logged (a service acted on while stopped has no stream; consistent CLI-action logging is deferred).
 
@@ -445,7 +462,8 @@ Example (a daily-budget pause, then the automatic resume when the window rolls o
 | `pid` daemon itself crashes | Outer supervisor (systemd) restarts; state.json restored; running services re-spawned |
 | Disk full when writing state.json | Daemon refuses new mutating ops, surfaces error; existing subprocesses unaffected |
 | Approval request times out | If request had `timeout`, agent auto-resolves per pi protocol; `pid` removes from inbox |
-| Service file changes on disk | `pid reload` (or auto-reload if enabled) re-validates and applies; running service keeps current config until restart |
+| Service file changes on disk | `pid reload` re-validates and reconciles (ADR 0010); a running service keeps its current config until restart, flagged `config_changed` on `status` |
+| Service file deleted while running | `pid reload` flags the live service `orphaned` and leaves it running; it deregisters on its next stop (ADR 0010) |
 
 ## Security posture (v0)
 

@@ -28,3 +28,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0007](0007-intervention-events.md) — Synthetic intervention events: `pid_quarantine`, `pid_budget_pause`, `pid_budget_resume` — **Accepted**
 - [0008](0008-observability-read-path.md) — Observability read path: daemon-free CLI reader, no index (scan + tail-follow), daily-segment rotation, lean example web dashboard — **Accepted**
 - [0009](0009-chronicle-event-selection.md) — Chronicle event selection: persist lifecycle events, drop pi's high-frequency streaming frames (`message_update`/`tool_execution_update`) — **Accepted**
+- [0010](0010-reload-semantics.md) — `pid reload`: service-set reconciliation by disk presence, never interrupting running work (orphan-on-stop, staged config + `pid_config_changed`) — **Accepted**

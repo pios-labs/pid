@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { serviceSchema } from "../src/services/schema.js";
-import type { ServiceRecord } from "../src/supervisor/index.js";
+import type { ServiceRecord, ServiceStatus } from "../src/supervisor/index.js";
 
 const fixturePath = fileURLToPath(new URL("fixtures/fake-pi.mjs", import.meta.url));
 const spenderPath = fileURLToPath(new URL("fixtures/fake-pi-spender.mjs", import.meta.url));
@@ -407,5 +407,159 @@ describe("StateStore concurrent persists (snag S1)", () => {
 		// Last-writer-wins across instances means we can't assert the merged set; the contract here is
 		// simply that no write threw — the file is intact and parseable on the next open.
 		await expect(StateStore.open()).resolves.toBeDefined();
+	});
+});
+
+describe("Supervisor.reload (ADR 0010)", () => {
+	it("registers a newly-present service (add) and makes it startable", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-add-a", command: fixturePath });
+		const b = serviceSchema.parse({ name: "rl-add-b", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		const summary = await sup.reload({ services: [a, b], errors: [] });
+		expect(summary.added).toEqual(["rl-add-b"]);
+		expect((sup.status("rl-add-b") as ServiceRecord).state).toBe("stopped");
+
+		await sup.start("rl-add-b");
+		expect((sup.status("rl-add-b") as ServiceRecord).state).toBe("running");
+		await sup.shutdown();
+	});
+
+	it("deregisters a removed, not-running service (remove)", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-rm-a", command: fixturePath });
+		const b = serviceSchema.parse({ name: "rl-rm-b", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a, b], errors: [] } });
+
+		const summary = await sup.reload({ services: [a], errors: [] });
+		expect(summary.removed).toEqual(["rl-rm-b"]);
+		expect(() => sup.status("rl-rm-b")).toThrow(/unknown service/);
+	});
+
+	it("orphans a running service whose file is removed, then deregisters it on its terminal stop", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-orphan", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		await sup.start("rl-orphan");
+		const summary = await sup.reload({ services: [], errors: [] });
+		expect(summary.orphaned).toEqual(["rl-orphan"]);
+
+		const rec = sup.status("rl-orphan") as ServiceStatus;
+		expect(rec.orphaned).toBe(true);
+		expect(rec.state).toBe("running"); // never interrupted (ADR 0010)
+
+		// The removal is announced in the live chronicle before any stop.
+		const log = await waitForLog(join(tmp, "logs", "rl-orphan.jsonl"), "pid_config_changed");
+		expect(log).toContain('"change":"removed"');
+
+		// Stopping an orphan is terminal (no definition to restart from) — it deregisters.
+		await sup.stop("rl-orphan");
+		expect(() => sup.status("rl-orphan")).toThrow(/unknown service/);
+	});
+
+	it("stages a modified running service and applies it only on restart (never mid-run)", async () => {
+		const state = await StateStore.open();
+		const v1 = serviceSchema.parse({ name: "rl-stage", command: fixturePath });
+		const v2 = serviceSchema.parse({ name: "rl-stage", command: fixturePath, env: { FOO: "bar" } });
+		const sup = new Supervisor({ state, services: { services: [v1], errors: [] } });
+
+		await sup.start("rl-stage");
+		const summary = await sup.reload({ services: [v2], errors: [] });
+		expect(summary.staged).toEqual(["rl-stage"]);
+
+		let rec = sup.status("rl-stage") as ServiceStatus;
+		expect(rec.configChanged).toBe(true);
+		expect(rec.config.env).not.toEqual({ FOO: "bar" }); // live process keeps its old config
+		const log = await waitForLog(join(tmp, "logs", "rl-stage.jsonl"), "pid_config_changed");
+		expect(log).toContain('"change":"modified"');
+
+		await sup.restart("rl-stage"); // a restart is when the staged config takes effect
+		rec = sup.status("rl-stage") as ServiceStatus;
+		expect(rec.configChanged).toBe(false);
+		expect(rec.config.env).toEqual({ FOO: "bar" });
+		await sup.shutdown();
+	});
+
+	it("applies a modified, not-running service immediately (update)", async () => {
+		const state = await StateStore.open();
+		const v1 = serviceSchema.parse({ name: "rl-update", command: fixturePath });
+		const v2 = serviceSchema.parse({ name: "rl-update", command: fixturePath, env: { FOO: "bar" } });
+		const sup = new Supervisor({ state, services: { services: [v1], errors: [] } });
+
+		const summary = await sup.reload({ services: [v2], errors: [] });
+		expect(summary.updated).toEqual(["rl-update"]);
+		const rec = sup.status("rl-update") as ServiceStatus;
+		expect(rec.configChanged).toBe(false);
+		expect(rec.config.env).toEqual({ FOO: "bar" });
+	});
+
+	it("treats an unchanged set as a no-op and leaves a running service untouched", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-noop", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		await sup.start("rl-noop");
+		const summary = await sup.reload({ services: [a], errors: [] });
+		expect(summary).toMatchObject({ added: [], removed: [], updated: [], staged: [], orphaned: [] });
+
+		const rec = sup.status("rl-noop") as ServiceStatus;
+		expect(rec.state).toBe("running");
+		expect(rec.configChanged).toBe(false);
+		expect(rec.orphaned).toBeFalsy();
+		await sup.shutdown();
+	});
+
+	it("cancels a staged change when the file is reverted to the live config", async () => {
+		const state = await StateStore.open();
+		const v1 = serviceSchema.parse({ name: "rl-revert", command: fixturePath });
+		const v2 = serviceSchema.parse({ name: "rl-revert", command: fixturePath, env: { FOO: "bar" } });
+		const sup = new Supervisor({ state, services: { services: [v1], errors: [] } });
+
+		await sup.start("rl-revert");
+		await sup.reload({ services: [v2], errors: [] });
+		expect((sup.status("rl-revert") as ServiceStatus).configChanged).toBe(true);
+
+		const summary = await sup.reload({ services: [v1], errors: [] });
+		expect(summary.staged).toEqual([]);
+		expect((sup.status("rl-revert") as ServiceStatus).configChanged).toBe(false);
+		await sup.shutdown();
+	});
+
+	it("clears the orphaned flag when the file reappears", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-restore", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		await sup.start("rl-restore");
+		await sup.reload({ services: [], errors: [] });
+		expect((sup.status("rl-restore") as ServiceStatus).orphaned).toBe(true);
+
+		const summary = await sup.reload({ services: [a], errors: [] });
+		expect(summary.orphaned).toEqual([]);
+		expect((sup.status("rl-restore") as ServiceStatus).orphaned).toBeFalsy();
+		await sup.shutdown();
+	});
+
+	it("passes load errors through without disturbing existing services", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "rl-err", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		const summary = await sup.reload({ services: [a], errors: [{ file: "bad.yaml", error: "boom" }] });
+		expect(summary.errors).toEqual([{ file: "bad.yaml", error: "boom" }]);
+		expect((sup.status("rl-err") as ServiceRecord).state).toBe("stopped");
+	});
+
+	it("preserves runtime state (enabled) across a reload", async () => {
+		const state = await StateStore.open();
+		const v1 = serviceSchema.parse({ name: "rl-enabled", command: fixturePath });
+		const v2 = serviceSchema.parse({ name: "rl-enabled", command: fixturePath, env: { FOO: "bar" } });
+		const sup = new Supervisor({ state, services: { services: [v1], errors: [] } });
+
+		await sup.enable("rl-enabled");
+		await sup.reload({ services: [v2], errors: [] });
+		expect(await state.getEnabled()).toContain("rl-enabled");
 	});
 });

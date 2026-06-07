@@ -31,6 +31,33 @@ export interface ServiceRecord {
 	pid?: number;
 	startedAt?: string;
 	lastFailure?: { at: string; signature: string };
+	/**
+	 * The service's YAML was removed on disk while it was running (ADR 0010). The live process keeps
+	 * running on its last definition; `finalizeExit` deregisters it on its next (terminal) stop.
+	 * In-memory only — a daemon restart loads only on-disk services, so an orphan simply ceases to exist.
+	 */
+	orphaned?: boolean;
+	/**
+	 * The service's YAML was modified while it was running (ADR 0010). The new config is staged here;
+	 * the live process keeps its old config until restart, when `start()` adopts this. In-memory only.
+	 */
+	pendingConfig?: ServiceConfig;
+}
+
+/** The reconcile outcome of `pid reload` (ADR 0010): one bucket per disposition, plus per-file load errors. */
+export interface ReloadSummary {
+	/** Newly-present definitions registered. */
+	added: string[];
+	/** Definitions whose file vanished while not running — fully deregistered. */
+	removed: string[];
+	/** Modified definitions applied in place (the service was not running). */
+	updated: string[];
+	/** Modified while running — new config staged, applies on next start. */
+	staged: string[];
+	/** File vanished while running — left running, flagged, deregistered on next stop. */
+	orphaned: string[];
+	/** Per-file validation errors (skipped, prior state untouched). */
+	errors: { file: string; error: string }[];
 }
 
 /**
@@ -42,6 +69,8 @@ export interface ServiceRecord {
  */
 export interface ServiceStatus extends ServiceRecord {
 	pendingApprovals: number;
+	/** Derived on read: the service has a staged config change pending a restart (ADR 0010). */
+	configChanged: boolean;
 }
 
 export interface SupervisorOptions {
@@ -125,14 +154,19 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 
 	list(): ServiceStatus[] {
 		const pending = this.pendingCounts();
-		return [...this.services.values()].map((record) => ({ ...record, pendingApprovals: pending.get(record.name) ?? 0 }));
+		return [...this.services.values()].map((record) => this.toStatus(record, pending.get(record.name) ?? 0));
 	}
 
 	status(name?: string): ServiceStatus | ServiceStatus[] {
 		if (!name) return this.list();
 		const record = this.services.get(name);
 		if (!record) throw new Error(`unknown service: ${name}`);
-		return { ...record, pendingApprovals: this.pendingCounts().get(name) ?? 0 };
+		return this.toStatus(record, this.pendingCounts().get(name) ?? 0);
+	}
+
+	/** Project a record onto the status view: the live approval count + the derived `configChanged` flag. */
+	private toStatus(record: ServiceRecord, pendingApprovals: number): ServiceStatus {
+		return { ...record, pendingApprovals, configChanged: record.pendingConfig !== undefined };
 	}
 
 	/** Per-service count of in-flight approvals, derived live from the router (never stored; ADR 0006). */
@@ -158,6 +192,16 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		}
 		if (this.running.has(name)) {
 			throw new Error(`service already running: ${name}`);
+		}
+
+		// Adopt a config staged by `pid reload` while the service was running (ADR 0010): a restart is
+		// the point at which a modified definition takes effect. Re-wire the policy/budget consumers
+		// to the new config before the spawn.
+		if (record.pendingConfig) {
+			record.config = record.pendingConfig;
+			record.pendingConfig = undefined;
+			this.wirePolicies(name, record.config);
+			await this.wireBudget(name, record.config);
 		}
 
 		record.state = "starting";
@@ -392,6 +436,113 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		return { name, state: record.state };
 	}
 
+	/**
+	 * Re-read the service set from disk and reconcile it against the live registry (ADR 0010). The
+	 * caller (the daemon) owns the filesystem read and hands in the `LoadResult`, mirroring how the
+	 * initial set is injected at construction. Governing rule, mirrored from pi's `/reload`: reconcile
+	 * definitions, **never interrupt running work** — a running service finishes on the definition it
+	 * started with; a changed definition takes effect on its next start.
+	 *
+	 * Runtime state (enabled/quarantined, budget windows, the approval inbox) is preserved untouched:
+	 * it lives in state.json / budget files / the router, not the YAML, so a re-read can't disturb it.
+	 */
+	async reload(load: LoadResult): Promise<ReloadSummary> {
+		const summary: ReloadSummary = { added: [], removed: [], updated: [], staged: [], orphaned: [], errors: load.errors };
+		const next = new Map(load.services.map((c) => [c.name, c] as const));
+
+		// Additions + modifications (disk presence is truth).
+		for (const [name, config] of next) {
+			const existing = this.services.get(name);
+			if (!existing) {
+				await this.addService(config);
+				summary.added.push(name);
+				continue;
+			}
+			existing.orphaned = false; // the file is present again — clear any prior orphaned flag
+			if (configsEqual(existing.config, config)) {
+				existing.pendingConfig = undefined; // a revert to the live config cancels a staged change
+				continue;
+			}
+			if (this.running.has(name)) {
+				// Modified while running: stage it, surface it, but leave the live process on its old config.
+				// Only log/report on a *new* staging — a reload that re-observes the same pending change is
+				// not a fresh event (keeps the chronicle one-line-per-real-event; status still shows it).
+				const alreadyStaged = existing.pendingConfig !== undefined && configsEqual(existing.pendingConfig, config);
+				existing.pendingConfig = config;
+				if (!alreadyStaged) {
+					this.logPidEvent(name, "pid_config_changed", { change: "modified", by: "reload" });
+					summary.staged.push(name);
+				}
+			} else {
+				// Modified, not running: apply now (no events flow while stopped, so this == next start).
+				existing.config = config;
+				existing.pendingConfig = undefined;
+				this.wirePolicies(name, config);
+				await this.wireBudget(name, config);
+				summary.updated.push(name);
+			}
+		}
+
+		// Removals (snapshot keys first — deregister mutates the map).
+		for (const name of [...this.services.keys()]) {
+			if (next.has(name)) continue;
+			const record = this.requireService(name);
+			if (this.running.has(name)) {
+				// Removed while running: the live process is the in-flight frame — leave it running,
+				// flag it, and let finalizeExit deregister it on its next (necessarily terminal) stop.
+				// Transition-only (a re-reload of an already-orphaned service is not a fresh event). Any
+				// staged change is moot now — the file is gone — so clear it so status shows only orphaned.
+				if (!record.orphaned) {
+					record.orphaned = true;
+					record.pendingConfig = undefined;
+					this.logPidEvent(name, "pid_config_changed", { change: "removed", by: "reload" });
+					summary.orphaned.push(name);
+				}
+			} else {
+				this.deregister(name);
+				summary.removed.push(name);
+			}
+		}
+
+		return summary;
+	}
+
+	/** Register a newly-discovered service (reload add path), mirroring the constructor's wiring. */
+	private async addService(config: ServiceConfig): Promise<void> {
+		this.services.set(config.name, { name: config.name, config, state: "stopped" });
+		this.wirePolicies(config.name, config);
+		await this.wireBudget(config.name, config);
+	}
+
+	/** (Re-)wire the always-on consumers — crash detector + approval router — to a service's config. */
+	private wirePolicies(name: string, config: ServiceConfig): void {
+		this.crash.register(name, config.quarantine);
+		this.approvals.register(name, {
+			gate: config.gate,
+			autoApprove: config.auto_approve,
+			onUnmatched: config.on_unmatched,
+		});
+	}
+
+	/** Wire (or unwire) the cost governor for a service, opening its budget store if it declares a budget. */
+	private async wireBudget(name: string, config: ServiceConfig): Promise<void> {
+		if (config.budget) {
+			this.governor ??= new CostGovernor({ actions: this });
+			const store = await BudgetStore.open(name);
+			this.governor.register(name, config.budget, store);
+		} else {
+			this.governor?.unregister(name);
+		}
+	}
+
+	/** Fully drop a service from the registry and every consumer (reload removal / orphan terminal stop). */
+	private deregister(name: string): void {
+		this.services.delete(name);
+		this.crash.unregister(name);
+		this.approvals.unregister(name);
+		this.governor?.unregister(name);
+	}
+
 	async enable(name: string): Promise<void> {
 		this.requireService(name);
 		await this.state.setEnabled(name, true);
@@ -561,6 +712,10 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			record.state = "failed";
 			record.lastFailure = { at, signature: `proc:exit_${code}` };
 		}
+
+		// An orphaned service (its YAML was removed on reload while it ran) has no definition to
+		// restart from, so this stop is terminal: drop it from the registry entirely (ADR 0010).
+		if (record.orphaned) this.deregister(name);
 	}
 
 	/** Resolve `true` if the child exits within `ms`, else `false`. Already-exited children resolve `true`. */
@@ -603,4 +758,13 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		if (!record) throw new Error(`unknown service: ${name}`);
 		return record;
 	}
+}
+
+/**
+ * Structural equality of two validated service configs — the reload "modified?" test (ADR 0010).
+ * Both operands are produced by the same Zod schema parse, so key order is deterministic and a
+ * JSON-string compare is reliable (and cheap at v0 set sizes; no hashing/index needed).
+ */
+function configsEqual(a: ServiceConfig, b: ServiceConfig): boolean {
+	return JSON.stringify(a) === JSON.stringify(b);
 }

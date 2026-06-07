@@ -110,6 +110,21 @@ export class ApprovalRouter {
 	}
 
 	/**
+	 * Stop tracking a service whose definition was removed on `pid reload` (ADR 0010): drop its policy
+	 * and discard any pending dialogs for it (cancel their timeout timers). Pi has already exited (we
+	 * only deregister a non-running service), so there is no one to reply to.
+	 */
+	unregister(name: string): void {
+		this.tracked.delete(name);
+		for (const [id, entry] of this.inbox) {
+			if (entry.service === name) {
+				this.clearTimer(id);
+				this.inbox.delete(id);
+			}
+		}
+	}
+
+	/**
 	 * Handle one parsed subprocess event: track in-flight tools and route dialogs. Synchronous state
 	 * mutation (events arrive serialized from the JSONL reader); replies are fire-and-forget. No-op
 	 * for untracked services and irrelevant events.

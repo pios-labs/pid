@@ -244,6 +244,15 @@ export class CostGovernor implements BudgetActions {
 	}
 
 	/**
+	 * Stop tracking a service whose budget config was removed, or whose definition was removed on
+	 * `pid reload` (ADR 0010). Cancels any pending resume timer first so it can't fire post-removal.
+	 */
+	unregister(name: string): void {
+		this.cancelResume(name);
+		this.tracked.delete(name);
+	}
+
+	/**
 	 * Apply a manual budget override and resume the service (the `pid resume` path, ADR 0002).
 	 *
 	 * `spec` is a per-dimension override (number = new ceiling, null = unlimited, absent = leave

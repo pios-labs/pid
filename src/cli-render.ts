@@ -9,7 +9,7 @@
  */
 
 import type { PendingApproval } from "./approvals/router.js";
-import type { ServiceStatus } from "./supervisor/index.js";
+import type { ReloadSummary, ServiceStatus } from "./supervisor/index.js";
 
 /**
  * `pid status [name]`: a detail block for one service, or the shared overview table for all.
@@ -25,7 +25,7 @@ export function formatServiceTable(services: ServiceStatus[], now: number): stri
 	if (services.length === 0) return "No services.";
 	const rows = services.map((s) => [
 		s.name,
-		s.state,
+		stateCell(s),
 		s.pid === undefined ? "-" : String(s.pid),
 		s.startedAt ? formatAge(now - Date.parse(s.startedAt)) : "-",
 		String(s.pendingApprovals),
@@ -46,7 +46,33 @@ export function formatServiceDetail(s: ServiceStatus, now: number): string {
 		const prefix = s.state === "quarantined" ? "crash loop: " : "";
 		lines.push(`  why      ${prefix}${s.lastFailure.signature}  (${formatTime(s.lastFailure.at)})`);
 	}
+	if (s.orphaned) lines.push("  note     removed on disk (orphaned) — deregisters when it next stops");
+	if (s.configChanged) lines.push("  note     config changed on disk — restart to apply");
 	return lines.join("\n");
+}
+
+/** The STATE cell for the overview table, annotated with reload flags (ADR 0010) when set. */
+function stateCell(s: ServiceStatus): string {
+	const flags = [s.orphaned ? "orphaned" : "", s.configChanged ? "config-changed" : ""].filter(Boolean);
+	return flags.length ? `${s.state} (${flags.join(",")})` : s.state;
+}
+
+/**
+ * `pid reload`: the reconcile summary (ADR 0010), one section per non-empty disposition. The empty
+ * case still confirms the reload ran (so a no-op isn't mistaken for a failure).
+ */
+export function formatReloadSummary(s: ReloadSummary): string {
+	const lines: string[] = [];
+	const section = (label: string, names: string[]) => {
+		if (names.length) lines.push(`  ${label}: ${names.join(", ")}`);
+	};
+	section("added", s.added);
+	section("updated", s.updated);
+	section("staged (restart to apply)", s.staged);
+	section("orphaned (removed on disk, still running)", s.orphaned);
+	section("removed", s.removed);
+	for (const e of s.errors) lines.push(`  error ${e.file}: ${e.error}`);
+	return lines.length === 0 ? "Reloaded — no changes." : `Reloaded.\n${lines.join("\n")}`;
 }
 
 /** Action-command receipt (`start`/`stop`/`resume`/…), mirroring D1's approve/deny receipts. */

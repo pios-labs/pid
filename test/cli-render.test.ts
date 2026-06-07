@@ -5,6 +5,7 @@ import {
 	formatApprovalsTable,
 	formatApproveReceipt,
 	formatDenyReceipt,
+	formatReloadSummary,
 	formatStatus,
 } from "../src/cli-render.js";
 import type { ServiceConfig } from "../src/services/schema.js";
@@ -191,5 +192,52 @@ describe("formatActionReceipt", () => {
 
 	it("omits the arrow for stateless toggles", () => {
 		expect(formatActionReceipt("enabled", "release-captain")).toBe("✓ enabled release-captain");
+	});
+});
+
+describe("reload flags on status (ADR 0010)", () => {
+	it("annotates the overview-table STATE cell with reload flags", () => {
+		const out = formatStatus(
+			[
+				svc({ name: "orph", state: "running", orphaned: true }),
+				svc({ name: "chg", state: "running", configChanged: true }),
+			],
+			0,
+		);
+		expect(out).toContain("running (orphaned)");
+		expect(out).toContain("running (config-changed)");
+	});
+
+	it("adds note lines to the single-service detail block", () => {
+		const orphaned = formatStatus(svc({ name: "orph", orphaned: true }), 0);
+		expect(orphaned).toContain("removed on disk (orphaned)");
+		const changed = formatStatus(svc({ name: "chg", configChanged: true }), 0);
+		expect(changed).toContain("config changed on disk — restart to apply");
+	});
+});
+
+describe("formatReloadSummary (ADR 0010)", () => {
+	const empty = { added: [], removed: [], updated: [], staged: [], orphaned: [], errors: [] };
+
+	it("confirms a no-op reload", () => {
+		expect(formatReloadSummary(empty)).toBe("Reloaded — no changes.");
+	});
+
+	it("lists each non-empty disposition with its services", () => {
+		const out = formatReloadSummary({
+			...empty,
+			added: ["a"],
+			updated: ["b"],
+			staged: ["c"],
+			orphaned: ["d"],
+			removed: ["e"],
+			errors: [{ file: "bad.yaml", error: "boom" }],
+		});
+		expect(out).toContain("added: a");
+		expect(out).toContain("updated: b");
+		expect(out).toContain("staged (restart to apply): c");
+		expect(out).toContain("orphaned (removed on disk, still running): d");
+		expect(out).toContain("removed: e");
+		expect(out).toContain("error bad.yaml: boom");
 	});
 });

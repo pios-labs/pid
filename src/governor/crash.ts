@@ -155,6 +155,11 @@ export class CrashDetector {
 		t.quarantined = false;
 	}
 
+	/** Stop tracking a service whose definition was removed on `pid reload` (ADR 0010). */
+	unregister(name: string): void {
+		this.tracked.delete(name);
+	}
+
 	private async record(name: string, t: Tracked, signature: string): Promise<void> {
 		const nowMs = this.now();
 		t.recent.unshift({ at: new Date(nowMs).toISOString(), signature });
