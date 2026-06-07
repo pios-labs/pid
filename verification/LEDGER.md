@@ -22,6 +22,8 @@ Verdicts: **verified** (real receipt) · **fixed** (was wrong → fixed + receip
 | 5 | Governor pauses a service that breaches a token cap on **real** spend | `governor/cost.ts:350-367` `charge`→`evaluateBreach`→`pause()` | real assistant `message_end.usage` (the 4-component sum) | low `daily_tokens:50` → 1 real turn breaches → service paused | `s5`: 1432 tok > 50 → `pid_budget_pause`; `budget show` → `paused:true`, breached `daily_tokens` | **verified** (CP2; USD caps → CP7) |
 | 6 | `pid_budget_pause` payload matches the documented contract (ADR 0007) | `governor/cost.ts:374-385` `logPause`; supervisor `logBudgetPause` | the v0-spec "Log line schema" row | `{breached:[{cap,limit,spent,windowEnd}],resumeAt,by:"governor"}`, source `pid` | `s5`: exact match — `daily_tokens`/50/1432/midnight, `resumeAt`=windowEnd, `by:"governor"` | **verified** |
 | 7 | `pid budget reset` zeroes the window accounting (real daemon) | `governor/cost.ts:281-292` `reset`; `budget/store.ts` `reset` | — (pid-native) | reset → `tokensDay` back to 0, still paused | `s5`: `budget reset` → `tokensDay:0` | **verified** |
+| 8 | Crash detector quarantines on **real** repeated same-tool failures (full flow) | `governor/crash.ts:163-184` `record`→`quarantine()` | real `tool_execution_end{isError,toolName}` ×N in-window | 3 failing reads → terminal quarantine, pi stopped | `s3`: 3× `tool:read:error` → `pid_quarantine`; `status` → `state:"quarantined"`, no pid | **verified** (CP3; rows 3/4 input shapes now exercised end-to-end) |
+| 9 | `pid_quarantine` payload matches the documented contract (ADR 0003/0007) | `governor/crash.ts:176-182` `logQuarantine` | v0-spec "Log line schema" row | `{signature,count,threshold,windowSeconds,by:"crash_detector"}` | `s3`: exact — `tool:read:error`/3/3/300/`crash_detector`, written right after the 3rd failing read | **verified** |
 
 ## CP1 — reconciliation (captures × fixtures × consuming code × pi-source)
 
@@ -57,6 +59,13 @@ Whole real path proven through the live daemon: real `message_end.usage` → `ex
 - **Sequencing observation (ground truth):** in a single-turn service the `pid_budget_pause` lands *after* `agent_end` — the turn completes before the governor's async charge resolves. This still honours the ADR 0007 "logged before the stop" contract (it is written while the stream is open, then `stop()` runs); the relative order vs `agent_end` is not part of the contract. A continuous/multi-turn service would be interrupted mid-stream instead.
 - **Out of scope (pure, not re-run with real pi):** the auto-resume **timer** firing at the next window rollover, and the window-roll/DST math — these are injected-clock unit tests (`governor.test.ts`, `time.test.ts`) and never touch pi's runtime. A black-box live daemon uses the real wall clock, so the rollover can't be elicited in a receipt without adding test-only clock plumbing to the daemon (rejected — a new abstraction, not warranted). The real-pi boundary (does genuine spend trigger the pause + the documented event) is what CP2 verifies, and it does.
 - USD caps (`daily_usd`/`weekly_usd`) and `cost.total` enforcement remain deferred to CP7 (zai reports `$0`); the token path is independent and now verified.
+
+## CP3 — crash quarantine on real repeated failures (`s3-crash-quarantine.sh`)
+
+Real pi was driven to read five nonexistent files one tool-call at a time; each produced a genuine `tool_execution_end{isError:true,toolName:"read"}` → signature `tool:read:error`. At the 3rd identical failure the crash detector wrote `pid_quarantine` (right after that `tool_execution_end`, before the graceful stop) and quarantined the service. `pid status` confirms the terminal `quarantined` state with no live pid. Receipt: `bash verification/scenarios/s3-crash-quarantine.sh`.
+
+- **Graceful-stop observation:** the quarantine's `stop()` closes stdin, so pi finishes its in-flight turn (a couple more events appear after `pid_quarantine`) before shutting down — expected, and the quarantine event is correctly sequenced before the stop completes.
+- The `proc:exit_*` signature remains deferred (no relauncher exists to make a dead process *loop*; ADR 0003 decision 4) — unchanged by this checkpoint.
 
 ## Open (next checkpoints)
 
