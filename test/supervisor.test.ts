@@ -562,4 +562,13 @@ describe("Supervisor.reload (ADR 0010)", () => {
 		await sup.reload({ services: [v2], errors: [] });
 		expect(await state.getEnabled()).toContain("rl-enabled");
 	});
+
+	it("enable/disable return a structured payload so `--json` is valid (not undefined)", async () => {
+		const state = await StateStore.open();
+		const a = serviceSchema.parse({ name: "en-payload", command: fixturePath });
+		const sup = new Supervisor({ state, services: { services: [a], errors: [] } });
+
+		expect(await sup.enable("en-payload")).toEqual({ name: "en-payload", enabled: true });
+		expect(await sup.disable("en-payload")).toEqual({ name: "en-payload", enabled: false });
+	});
 });

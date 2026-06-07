@@ -557,14 +557,16 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		this.governor?.unregister(name);
 	}
 
-	async enable(name: string): Promise<void> {
+	async enable(name: string): Promise<{ name: string; enabled: boolean }> {
 		this.requireService(name);
 		await this.state.setEnabled(name, true);
+		return { name, enabled: true };
 	}
 
-	async disable(name: string): Promise<void> {
+	async disable(name: string): Promise<{ name: string; enabled: boolean }> {
 		this.requireService(name);
 		await this.state.setEnabled(name, false);
+		return { name, enabled: false };
 	}
 
 	async startEnabled(): Promise<void> {
