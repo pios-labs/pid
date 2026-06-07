@@ -287,6 +287,20 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 
 		record.state = "running";
 		record.startedAt = new Date().toISOString();
+
+		// Deliver the service's task to the agent. pi's rpc mode does nothing until it receives a
+		// `{type:"prompt", message}` command on stdin (pi/.../docs/rpc.md "Prompting"); without this the
+		// agent spawns and sits idle forever. This is the one line that makes a service actually *run*.
+		// Trigger-driven re-fires (cron/file_watch) are future work; for now the prompt is delivered when
+		// the service starts, which covers the manual trigger (the default) and any explicit `pid start`.
+		if (record.config.prompt) {
+			try {
+				await this.send(name, { type: "prompt", message: record.config.prompt });
+			} catch (err) {
+				process.stderr.write(`[${name}] failed to deliver prompt: ${err instanceof Error ? err.message : String(err)}\n`);
+			}
+		}
+
 		return { name, state: record.state };
 	}
 
