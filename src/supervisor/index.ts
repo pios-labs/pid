@@ -709,10 +709,12 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		// Detach the reader before ending the log: the stdout `end` event can flush a final buffered
 		// line concurrently with exit, so we close the reader first (the writer also no-ops post-end).
 		running.detachReader();
-		running.log.end();
 
 		const record = this.services.get(name);
-		if (!record) return;
+		if (!record) {
+			running.log.end();
+			return;
+		}
 		record.pid = undefined;
 
 		const at = new Date().toISOString();
@@ -728,6 +730,23 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			record.state = "failed";
 			record.lastFailure = { at, signature: `proc:exit_${code}` };
 		}
+
+		// Abnormal termination produces no pi event — the process never started (spawn error) or died
+		// mid-flight — so synthesize a documented `pid_service_exit` chronicle event for it (ADR 0012).
+		// Otherwise a spawn failure or crash is invisible to the timeline/dashboard, surfacing only as
+		// `lastFailure` on a live status. Written to the still-open writer before we end it; a deliberate
+		// clean stop needs no synthetic event (its graceful pi shutdown is already in the chronicle).
+		if (record.state === "failed" && record.lastFailure) {
+			running.log.write(
+				formatPidEvent(
+					name,
+					"pid_service_exit",
+					{ signature: record.lastFailure.signature, code, signal, error: error?.message },
+					at,
+				),
+			);
+		}
+		running.log.end();
 
 		// An orphaned service (its YAML was removed on reload while it ran) has no definition to
 		// restart from, so this stop is terminal: drop it from the registry entirely (ADR 0010).

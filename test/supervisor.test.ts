@@ -98,6 +98,16 @@ describe("Supervisor.start", () => {
 
 		await expect(sup.start("nope")).rejects.toThrow(/failed to start nope/);
 		expect((sup.status("nope") as ServiceRecord).state).toBe("failed");
+
+		// The failure is also recorded in the chronicle (ADR 0012) — otherwise a spawn error is invisible
+		// to the timeline/dashboard, surfacing only as `lastFailure` on a live status.
+		const text = await waitForLog(join(tmp, "logs", "nope.jsonl"), "pid_service_exit");
+		const exit = text
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l))
+			.find((e) => e.type === "pid_service_exit");
+		expect(exit).toMatchObject({ type: "pid_service_exit", source: "pid", data: { signature: "proc:spawn_error" } });
 	});
 });
 

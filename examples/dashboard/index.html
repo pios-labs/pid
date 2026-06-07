@@ -217,6 +217,11 @@
 				font-size: 11px;
 				color: var(--muted);
 			}
+			.fail {
+				font-family: var(--mono);
+				font-size: 11px;
+				color: var(--red);
+			}
 			.cost b {
 				color: var(--text);
 				font-weight: 600;
@@ -522,6 +527,11 @@
 						.join("  ·  ");
 					if (meta.textContent) c.appendChild(meta);
 
+					// Surface *why* a service failed/quarantined, so a FAILED card isn't unexplained.
+					if (s.lastFailure && (s.state === "failed" || s.state === "quarantined")) {
+						c.appendChild(el("div", "fail", `⚠ ${s.lastFailure.signature}`));
+					}
+
 					const b = budgets[s.name];
 					if (b) c.appendChild(renderCost(b));
 
@@ -647,6 +657,8 @@
 						return `approval ${d.decision || d.method || ""}`;
 					case "pid_config_changed":
 						return `config ${d.change} (by ${d.by})`;
+					case "pid_service_exit":
+						return `exit — ${d.signature}${d.code != null ? ` (code ${d.code})` : ""}`;
 					case "tool_execution_start":
 						return d.toolName || d.name || "tool start";
 					case "tool_execution_end":
@@ -681,6 +693,9 @@
 				if (env.type === "pid_quarantine") {
 					cls = "alert q";
 					summary = `${env.service} quarantined — ${d.signature}`;
+				} else if (env.type === "pid_service_exit") {
+					cls = "alert q";
+					summary = `${env.service} exited — ${d.signature}`;
 				} else if (env.type === "pid_budget_pause") {
 					summary = `${env.service} budget-paused — ${(d.breached || []).map((b) => b.cap).join(", ")}`;
 				} else if (env.type === "pid_budget_resume") {
