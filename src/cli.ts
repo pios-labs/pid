@@ -168,7 +168,9 @@ program
 
 program
 	.command("tail")
-	.description("Follow the live event stream of all services at once, each line tagged by service")
+	.description(
+		"Follow the live event stream of all services at once (picks up new services), each line tagged by service",
+	)
 	.option("--raw", "emit the raw JSONL chronicle instead of the rendered line view")
 	.option("--type <type>", "only events of this type")
 	.option("--source <pi|pid>", "only events from this source")
@@ -356,7 +358,17 @@ async function runLogs(name: string, opts: LogsFlags): Promise<void> {
 /**
  * `pid tail` — follow every service's live chronicle at once (ADR 0008), interleaved in arrival order
  * and prefixed by service name. Daemon-free: one FileTailer per live file. New events only (it's a live
- * monitor, not history); the set of services is those with a live file when tailing starts.
+ * monitor, not history).
+ *
+ * The follow-set is **dynamic** (ADR 0008, amended 2026-06-07): `pid tail` is a long-lived monitor, so a
+ * service that first starts *after* launch must be picked up — otherwise its events stay invisible until
+ * a re-run, and a dashboard built on `pid tail --raw` would silently miss them. So instead of a fixed
+ * set captured at startup, it re-scans the logs dir on an interval (polling, mirroring FileTailer — not
+ * `fs.watch`, whose rename/inode flakiness ADR 0008 deliberately avoids) and attaches any new file. A
+ * file present at launch is followed live (no history replay — it's a monitor); a file that *appears*
+ * later is brand-new, so it is read from its start (small, no flood) and announced like `tail -F`'s
+ * "has appeared; following". Status notices go to **stderr** so stdout stays a pure event stream
+ * (`pid tail --raw | jq`, the dashboard facade). An empty start waits rather than erroring out.
  */
 async function runTail(opts: LogsFlags): Promise<void> {
 	let filter: LogFilter;
@@ -368,35 +380,55 @@ async function runTail(opts: LogsFlags): Promise<void> {
 		return;
 	}
 
-	const services = await listLiveServices(logsDir());
-	if (services.length === 0) {
-		process.stderr.write("pid: no service logs to follow\n");
-		return;
-	}
-	const serviceWidth = Math.max(...services.map((s) => s.name.length));
+	const dir = logsDir();
+	const tailers = new Map<string, FileTailer>();
+	let serviceWidth = 0; // widens as services attach; the emit closure reads it live (late arrivals align)
 
-	const tailers = services.map((s) => {
-		const tailer = new FileTailer(s.path, (raw) => {
-			if (opts.raw) {
-				process.stdout.write(`${raw}\n`); // the envelope already carries `service`
-				return;
-			}
-			let env: LogEnvelope;
-			try {
-				env = JSON.parse(raw) as LogEnvelope;
-			} catch {
-				return;
-			}
-			if (matchesFilter(env, filter)) {
-				process.stdout.write(`${formatLogLine(env, { withService: true, serviceWidth })}\n`);
-			}
-		});
+	const attach = (name: string, path: string, fromStart: boolean): void => {
+		if (tailers.has(name)) return;
+		serviceWidth = Math.max(serviceWidth, name.length);
+		const tailer = new FileTailer(
+			path,
+			(raw) => {
+				if (opts.raw) {
+					process.stdout.write(`${raw}\n`); // the envelope already carries `service`
+					return;
+				}
+				let env: LogEnvelope;
+				try {
+					env = JSON.parse(raw) as LogEnvelope;
+				} catch {
+					return;
+				}
+				if (matchesFilter(env, filter)) {
+					process.stdout.write(`${formatLogLine(env, { withService: true, serviceWidth })}\n`);
+				}
+			},
+			{ fromStart },
+		);
 		tailer.start();
-		return tailer;
-	});
+		tailers.set(name, tailer);
+	};
+
+	// Services already logging at launch: follow live (no history replay on a monitor).
+	const initial = await listLiveServices(dir);
+	for (const s of initial) attach(s.name, s.path, false);
+	if (initial.length === 0) process.stderr.write("pid: no services logging yet — waiting… (Ctrl-C to quit)\n");
+
+	// Pick up services that begin logging later, reading each from its start so its boot isn't missed.
+	const rescanOnce = async (): Promise<void> => {
+		for (const s of await listLiveServices(dir)) {
+			if (!tailers.has(s.name)) {
+				process.stderr.write(`pid: following ${s.name}\n`);
+				attach(s.name, s.path, true);
+			}
+		}
+	};
+	const rescan = setInterval(() => void rescanOnce(), 1000);
 
 	process.on("SIGINT", () => {
-		for (const tailer of tailers) tailer.stop();
+		clearInterval(rescan);
+		for (const tailer of tailers.values()) tailer.stop();
 		process.exit(0);
 	});
 }
