@@ -6,3 +6,6 @@ dist/
 .idea/
 coverage/
 *.tsbuildinfo
+
+# local dev helper (not product)
+dev-dashboard.sh
