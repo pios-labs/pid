@@ -74,11 +74,11 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 		case "reload":
 			// Re-read the service files from disk; the supervisor reconciles them (ADR 0010).
 			return supervisor.reload(await loadAllServices());
-		// `logs`/`tail` read the chronicle files directly client-side (ADR 0008) — never reach the
-		// daemon. `budget_*` remain unimplemented daemon ops.
 		case "budget_show":
+			return supervisor.budgetShow(req.name as string);
 		case "budget_reset":
-			throw new Error(`not implemented: ${cmd}`);
+			return supervisor.budgetReset(req.name as string);
+		// `logs`/`tail` read the chronicle files directly client-side (ADR 0008) — never reach the daemon.
 		default:
 			throw new Error(`unknown command: ${cmd}`);
 	}

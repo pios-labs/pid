@@ -4,10 +4,12 @@ import {
 	formatActionReceipt,
 	formatApprovalsTable,
 	formatApproveReceipt,
+	formatBudget,
 	formatDenyReceipt,
 	formatReloadSummary,
 	formatStatus,
 } from "../src/cli-render.js";
+import type { BudgetView } from "../src/governor/cost.js";
 import type { ServiceConfig } from "../src/services/schema.js";
 import type { ServiceStatus } from "../src/supervisor/index.js";
 
@@ -213,6 +215,41 @@ describe("reload flags on status (ADR 0010)", () => {
 		expect(orphaned).toContain("removed on disk (orphaned)");
 		const changed = formatStatus(svc({ name: "chg", configChanged: true }), 0);
 		expect(changed).toContain("config changed on disk — restart to apply");
+	});
+});
+
+describe("formatBudget", () => {
+	// dayEnd/weekEnd arrive as ISO strings over the socket — build the fixture that way (the real shape).
+	const view = {
+		caps: { daily_usd: 2, weekly_usd: 10, on_exceed: "pause", reset_tz: "UTC" },
+		snapshot: {
+			spentUsdDay: 0.5,
+			spentUsdWeek: 1.2,
+			tokensDay: 0,
+			dayEnd: "2026-06-08T00:00:00.000Z",
+			weekEnd: "2026-06-09T00:00:00.000Z",
+		},
+		paused: false,
+		breachedCaps: null,
+	} as unknown as BudgetView;
+
+	it("renders only the configured caps as spent / limit with reset times", () => {
+		const out = formatBudget(view, "nightly");
+		expect(out).toContain("nightly");
+		expect(out).toContain("daily    $0.50 / $2.00");
+		expect(out).toContain("weekly   $1.20 / $10.00");
+		expect(out).toContain("resets 2026-06-08 00:00 UTC");
+		expect(out).toContain("on exceed pause");
+		expect(out).not.toContain("tokens"); // daily_tokens not configured
+	});
+
+	it("shows the breached caps when paused", () => {
+		const paused = {
+			...view,
+			paused: true,
+			breachedCaps: [{ cap: "daily_usd", limit: 2, spent: 2.4, windowEnd: "2026-06-08T00:00:00.000Z" }],
+		} as unknown as BudgetView;
+		expect(formatBudget(paused, "nightly")).toContain("paused — over daily_usd");
 	});
 });
 

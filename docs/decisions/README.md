@@ -29,3 +29,4 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0008](0008-observability-read-path.md) — Observability read path: daemon-free CLI reader, no index (scan + tail-follow), daily-segment rotation, lean example web dashboard — **Accepted**
 - [0009](0009-chronicle-event-selection.md) — Chronicle event selection: persist lifecycle events, drop pi's high-frequency streaming frames (`message_update`/`tool_execution_update`) — **Accepted**
 - [0010](0010-reload-semantics.md) — `pid reload`: service-set reconciliation by disk presence, never interrupting running work (orphan-on-stop, staged config + `pid_config_changed`) — **Accepted**
+- [0011](0011-example-dashboard.md) — Example dashboard: API-first HTTP/SSE facade (pure CLI consumer), actions-on + `--read-only`, localhost+origin floor, embeddable web component — **Accepted**

@@ -7,11 +7,13 @@ import {
 	formatActionReceipt,
 	formatApprovalsTable,
 	formatApproveReceipt,
+	formatBudget,
 	formatDenyReceipt,
 	formatReloadSummary,
 	formatStatus,
 } from "./cli-render.js";
 import { runDaemon } from "./daemon.js";
+import type { BudgetView } from "./governor/cost.js";
 import { type LogFilter, listLiveServices, matchesFilter, parseSince, readChronicle } from "./log/reader.js";
 import { formatLogLine, logDay } from "./log/render.js";
 import { FileTailer } from "./log/tail.js";
@@ -243,14 +245,20 @@ const budget = program.command("budget").description("Inspect or reset service b
 budget
 	.command("show <name>")
 	.description("Show budget consumed for a service")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "budget_show", name });
+	.option("--json", "output the raw JSON payload instead of the rendered view")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon({ cmd: "budget_show", name }, opts.json, (data) => formatBudget(data as BudgetView, name));
 	});
 budget
 	.command("reset <name>")
-	.description("Force budget window reset")
-	.action(async (name: string) => {
-		await callDaemon({ cmd: "budget_reset", name });
+	.description("Force budget window reset (accounting only; use `pid resume` to run a paused service)")
+	.option("--json", "output the raw JSON payload instead of the rendered view")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		await renderDaemon(
+			{ cmd: "budget_reset", name },
+			opts.json,
+			(data) => `✓ budget reset ${name}\n${formatBudget(data as BudgetView, name)}`,
+		);
 	});
 
 program
@@ -391,19 +399,6 @@ async function runTail(opts: LogsFlags): Promise<void> {
 		for (const tailer of tailers) tailer.stop();
 		process.exit(0);
 	});
-}
-
-async function callDaemon(req: Request): Promise<void> {
-	try {
-		const socket = await connect();
-		const response = await sendCommand(socket, req);
-		process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
-		socket.end();
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		process.stderr.write(`pid: ${message}\n`);
-		process.exitCode = 1;
-	}
 }
 
 /**

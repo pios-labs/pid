@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type ApprovalActions, ApprovalRouter, type PendingApproval } from "../approvals/router.js";
 import { BudgetStore, type OverrideState } from "../budget/store.js";
-import { type BudgetActions, CostGovernor } from "../governor/cost.js";
+import { type BudgetActions, type BudgetView, CostGovernor } from "../governor/cost.js";
 import { type CrashActions, CrashDetector } from "../governor/crash.js";
 import { RotatingLogWriter } from "../log/writer.js";
 import type { LoadResult } from "../services/loader.js";
@@ -406,6 +406,20 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		if (!this.governor) throw new Error(`service has no budget: ${name}`);
 		await this.governor.override(name, spec, reset);
 		return { name, state: record.state };
+	}
+
+	/** Read a service's live budget view (`pid budget show`). Throws if the service declares no budget. */
+	budgetShow(name: string): Promise<BudgetView> {
+		this.requireService(name);
+		if (!this.governor) throw new Error(`service has no budget: ${name}`);
+		return this.governor.snapshot(name);
+	}
+
+	/** Force a fresh budget window (`pid budget reset`) — accounting only, does not change run state. */
+	budgetReset(name: string): Promise<BudgetView> {
+		this.requireService(name);
+		if (!this.governor) throw new Error(`service has no budget: ${name}`);
+		return this.governor.reset(name);
 	}
 
 	/**

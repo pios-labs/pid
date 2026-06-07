@@ -9,6 +9,7 @@
  */
 
 import type { PendingApproval } from "./approvals/router.js";
+import type { BudgetView } from "./governor/cost.js";
 import type { ReloadSummary, ServiceStatus } from "./supervisor/index.js";
 
 /**
@@ -78,6 +79,37 @@ export function formatReloadSummary(s: ReloadSummary): string {
 /** Action-command receipt (`start`/`stop`/`resume`/…), mirroring D1's approve/deny receipts. */
 export function formatActionReceipt(verb: string, name: string, state?: string): string {
 	return state ? `✓ ${verb} ${name} → ${state}` : `✓ ${verb} ${name}`;
+}
+
+/**
+ * `pid budget show` / `reset`: a labelled block of each configured cap as `spent / limit` with its
+ * window reset, plus any active override and the pause/breach state. Only configured caps are shown.
+ * `dayEnd`/`weekEnd` arrive as ISO strings over the socket; `new Date()` normalises either form.
+ */
+export function formatBudget(view: BudgetView, name: string): string {
+	const { caps, snapshot, paused, breachedCaps } = view;
+	const resets = (when: BudgetView["snapshot"]["dayEnd"]) => `resets ${formatTime(new Date(when).toISOString())}`;
+	const lines = [name];
+	if (caps.daily_usd !== undefined)
+		lines.push(
+			`  daily    $${snapshot.spentUsdDay.toFixed(2)} / $${caps.daily_usd.toFixed(2)}   ${resets(snapshot.dayEnd)}`,
+		);
+	if (caps.daily_tokens !== undefined)
+		lines.push(`  tokens   ${snapshot.tokensDay} / ${caps.daily_tokens} today   ${resets(snapshot.dayEnd)}`);
+	if (caps.weekly_usd !== undefined)
+		lines.push(
+			`  weekly   $${snapshot.spentUsdWeek.toFixed(2)} / $${caps.weekly_usd.toFixed(2)}   ${resets(snapshot.weekEnd)}`,
+		);
+	if (snapshot.override) {
+		const ov = Object.entries(snapshot.override)
+			.map(([k, v]) => `${k}=${v === null ? "unlimited" : v}`)
+			.join(", ");
+		if (ov) lines.push(`  override ${ov}`);
+	}
+	lines.push(`  on exceed ${caps.on_exceed}`);
+	if (paused && breachedCaps && breachedCaps.length > 0)
+		lines.push(`  status   paused — over ${breachedCaps.map((b) => b.cap).join(", ")}`);
+	return lines.join("\n");
 }
 
 /** `<n> thing` / `<n> things` — pluralise an English count noun. */

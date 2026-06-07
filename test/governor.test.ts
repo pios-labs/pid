@@ -354,3 +354,65 @@ describe("CostGovernor.override", () => {
 		await expect(gov.override("nope", { daily_usd: null })).rejects.toThrow(/unknown service/);
 	});
 });
+
+describe("CostGovernor.snapshot / reset", () => {
+	let h: ReturnType<typeof harness>;
+	let n = 0;
+	const svc = () => `snap-${n}`;
+
+	beforeEach(() => {
+		h = harness();
+		n += 1;
+	});
+
+	it("snapshot reflects charges against the configured caps", async () => {
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		const caps: BudgetConfig = {
+			daily_usd: 2.0,
+			daily_tokens: 1000,
+			weekly_usd: 10,
+			on_exceed: "notify",
+			reset_tz: "UTC",
+		};
+		gov.register(svc(), caps, await BudgetStore.open(svc()));
+		await gov.handleEvent(svc(), messageEnd(0.5, 100));
+
+		const view = await gov.snapshot(svc());
+		expect(view.caps.daily_usd).toBe(2.0);
+		expect(view.snapshot.spentUsdDay).toBeCloseTo(0.5);
+		expect(view.snapshot.tokensDay).toBe(100);
+		expect(view.snapshot.spentUsdWeek).toBeCloseTo(0.5);
+		expect(view.paused).toBe(false);
+	});
+
+	it("snapshot throws for a service with no budget tracked", async () => {
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		await expect(gov.snapshot("nope")).rejects.toThrow(/no budget/);
+	});
+
+	it("reset zeroes the window and clears breach/pause bookkeeping, without resuming", async () => {
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		gov.register(svc(), pauseCaps, await BudgetStore.open(svc()));
+		await gov.handleEvent(svc(), messageEnd(1.5, 10)); // breach -> pause
+		expect(gov.status(svc())?.paused).toBe(true);
+		expect(h.calls.pause).toEqual([svc()]);
+
+		const view = await gov.reset(svc());
+		expect(view.snapshot.spentUsdDay).toBe(0);
+		expect(gov.status(svc())?.paused).toBe(false);
+		expect(gov.status(svc())?.breachedCaps).toBeNull();
+		expect(h.calls.resume).toEqual([]); // accounting-only: reset never resumes
+	});
+
+	it("reset persists — a fresh store open sees zeroed spend", async () => {
+		const gov = new CostGovernor({ actions: h.actions, now: h.now, timers: h.timers });
+		const name = svc();
+		gov.register(name, pauseCaps, await BudgetStore.open(name));
+		await gov.handleEvent(name, messageEnd(0.8, 10));
+		await gov.reset(name);
+
+		const reopened = await BudgetStore.open(name);
+		const snap = await reopened.refresh(new Date(h.now()), "UTC");
+		expect(snap.spentUsdDay).toBe(0);
+	});
+});

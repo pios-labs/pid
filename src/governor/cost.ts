@@ -52,6 +52,18 @@ export interface BudgetStatus {
 	breachedCaps: BreachedCap[] | null;
 }
 
+/**
+ * The full read view of a service's budget — the `pid budget show` / dashboard payload. The configured
+ * caps, the live spend snapshot (windows rolled to now), and the current pause/breach state in one
+ * object so the CLI render and `--json` share a single source (mirrors the `ServiceStatus` pattern).
+ */
+export interface BudgetView {
+	caps: BudgetConfig;
+	snapshot: BudgetSnapshot;
+	paused: boolean;
+	breachedCaps: BreachedCap[] | null;
+}
+
 export type TimerHandle = unknown;
 
 /** Injectable timer service so resume scheduling is deterministic under test. */
@@ -250,6 +262,33 @@ export class CostGovernor implements BudgetActions {
 	unregister(name: string): void {
 		this.cancelResume(name);
 		this.tracked.delete(name);
+	}
+
+	/** The full read view for `pid budget show`: caps + live spend snapshot + pause/breach state. */
+	async snapshot(name: string): Promise<BudgetView> {
+		const t = this.tracked.get(name);
+		if (!t) throw new Error(`service has no budget: ${name}`);
+		const snapshot = await t.store.refresh(new Date(this.now()), t.caps.reset_tz);
+		return { caps: t.caps, snapshot, paused: t.paused, breachedCaps: t.lastBreach };
+	}
+
+	/**
+	 * Force a fresh budget window (`pid budget reset`): zero the day/week spend. This is an accounting
+	 * reset only — it does **not** change run state. A budget-paused service stays paused (use
+	 * `pid resume` to run it); we clear the governor's breach bookkeeping and cancel any stale resume
+	 * timer so the now-zeroed window is consistent. (`pid resume --reset` is the reset-and-resume path.)
+	 */
+	async reset(name: string): Promise<BudgetView> {
+		const t = this.tracked.get(name);
+		if (!t) throw new Error(`service has no budget: ${name}`);
+		if (t.resumeHandle !== null) {
+			this.timers.clear(t.resumeHandle);
+			t.resumeHandle = null;
+		}
+		await t.store.reset(new Date(this.now()), t.caps.reset_tz);
+		t.paused = false;
+		t.lastBreach = null;
+		return this.snapshot(name);
 	}
 
 	/**
