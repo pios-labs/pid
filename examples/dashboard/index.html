@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>pid dashboard</title>
+		<!--
+			The mission-control UI (ADR 0011 §7) — the facade's first client. It consumes the documented
+			dashboard API (docs/dashboard-api.md) and NOTHING else: the SSE stream at /api/events (snapshot +
+			log) and POST /api/… for actions. Build-free: one self-contained, vanilla, dark HTML/CSS/JS page,
+			no framework, no bundler, offline. A reference users fork — not a shipped product.
+		-->
+		<style>
+			:root {
+				--bg: #0b0f14;
+				--panel: #131922;
+				--panel-2: #0e141c;
+				--border: #232c39;
+				--text: #c9d4e0;
+				--muted: #7e8a9a;
+				--accent: #4ac1ff;
+				--green: #46d369;
+				--amber: #f1b24a;
+				--red: #ff5d5d;
+				--blue: #5b9dff;
+				--mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+			}
+			body {
+				background: var(--bg);
+				color: var(--text);
+				font: 13px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+				display: grid;
+				grid-template-rows: auto auto 1fr;
+				height: 100vh;
+				overflow: hidden;
+			}
+			header {
+				display: flex;
+				align-items: center;
+				gap: 16px;
+				padding: 10px 16px;
+				border-bottom: 1px solid var(--border);
+				background: var(--panel-2);
+			}
+			header h1 {
+				font-size: 15px;
+				font-weight: 650;
+				margin: 0;
+				letter-spacing: 0.2px;
+			}
+			header h1 span {
+				color: var(--accent);
+			}
+			.spacer {
+				flex: 1;
+			}
+			.conn {
+				display: flex;
+				align-items: center;
+				gap: 7px;
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.dot {
+				width: 9px;
+				height: 9px;
+				border-radius: 50%;
+				background: var(--muted);
+			}
+			.dot.up {
+				background: var(--green);
+				box-shadow: 0 0 7px var(--green);
+			}
+			.dot.down {
+				background: var(--red);
+			}
+			button {
+				font: inherit;
+				color: var(--text);
+				background: #1b2430;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 4px 10px;
+				cursor: pointer;
+			}
+			button:hover {
+				border-color: var(--accent);
+			}
+			button:disabled {
+				opacity: 0.4;
+				cursor: default;
+			}
+			button.danger:hover {
+				border-color: var(--red);
+				color: var(--red);
+			}
+			button.go:hover {
+				border-color: var(--green);
+				color: var(--green);
+			}
+			.ro-badge {
+				font-size: 11px;
+				color: var(--amber);
+				border: 1px solid var(--amber);
+				border-radius: 5px;
+				padding: 1px 7px;
+			}
+
+			/* service-card strip */
+			#cards {
+				display: flex;
+				gap: 10px;
+				padding: 12px 16px;
+				overflow-x: auto;
+				border-bottom: 1px solid var(--border);
+				min-height: 116px;
+				align-items: stretch;
+			}
+			.card {
+				min-width: 230px;
+				background: var(--panel);
+				border: 1px solid var(--border);
+				border-left: 3px solid var(--muted);
+				border-radius: 8px;
+				padding: 10px 12px;
+				display: flex;
+				flex-direction: column;
+				gap: 7px;
+			}
+			.card.running {
+				border-left-color: var(--green);
+			}
+			.card.paused {
+				border-left-color: var(--amber);
+			}
+			.card.quarantined,
+			.card.failed {
+				border-left-color: var(--red);
+			}
+			.card.starting,
+			.card.stopping {
+				border-left-color: var(--blue);
+			}
+			.card .top {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.card .name {
+				font-weight: 600;
+				font-size: 13px;
+			}
+			.card .meta {
+				color: var(--muted);
+				font-size: 11px;
+				font-family: var(--mono);
+			}
+			.chips {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 4px;
+			}
+			.chip {
+				font-size: 10.5px;
+				border-radius: 4px;
+				padding: 1px 6px;
+				border: 1px solid var(--border);
+				color: var(--muted);
+				white-space: nowrap;
+			}
+			.chip.state {
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				font-weight: 600;
+			}
+			.chip.running {
+				color: var(--green);
+				border-color: var(--green);
+			}
+			.chip.paused {
+				color: var(--amber);
+				border-color: var(--amber);
+			}
+			.chip.quarantined,
+			.chip.failed {
+				color: var(--red);
+				border-color: var(--red);
+			}
+			.chip.warn {
+				color: var(--amber);
+				border-color: var(--amber);
+			}
+			.chip.pending {
+				color: var(--accent);
+				border-color: var(--accent);
+			}
+			.card .actions {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 4px;
+				margin-top: auto;
+			}
+			.card .actions button {
+				padding: 3px 8px;
+				font-size: 11.5px;
+			}
+			.cost {
+				font-family: var(--mono);
+				font-size: 11px;
+				color: var(--muted);
+			}
+			.cost b {
+				color: var(--text);
+				font-weight: 600;
+			}
+			.bar {
+				height: 4px;
+				border-radius: 2px;
+				background: #1b2430;
+				overflow: hidden;
+			}
+			.bar > i {
+				display: block;
+				height: 100%;
+				background: var(--green);
+			}
+			.bar > i.warn {
+				background: var(--amber);
+			}
+			.bar > i.over {
+				background: var(--red);
+			}
+
+			/* main split: timeline | rail */
+			main {
+				display: grid;
+				grid-template-columns: 1fr 340px;
+				min-height: 0;
+			}
+			#timeline {
+				overflow-y: auto;
+				padding: 4px 0;
+				font-family: var(--mono);
+				font-size: 12px;
+			}
+			.ev {
+				display: grid;
+				grid-template-columns: 64px 130px 150px 1fr;
+				gap: 10px;
+				padding: 2px 16px;
+				border-bottom: 1px solid #121821;
+				white-space: nowrap;
+			}
+			.ev:hover {
+				background: var(--panel-2);
+			}
+			.ev .t {
+				color: var(--muted);
+			}
+			.ev .svc {
+				font-weight: 600;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.ev .ty {
+				color: var(--accent);
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.ev.pid .ty {
+				color: var(--amber);
+			}
+			.ev .d {
+				color: var(--muted);
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.rail {
+				border-left: 1px solid var(--border);
+				background: var(--panel-2);
+				display: grid;
+				grid-template-rows: 1fr 1fr;
+				min-height: 0;
+			}
+			.rail section {
+				display: flex;
+				flex-direction: column;
+				min-height: 0;
+				overflow: hidden;
+			}
+			.rail h2 {
+				font-size: 11px;
+				text-transform: uppercase;
+				letter-spacing: 0.6px;
+				color: var(--muted);
+				margin: 0;
+				padding: 9px 14px;
+				border-bottom: 1px solid var(--border);
+				display: flex;
+				gap: 8px;
+				align-items: center;
+			}
+			.rail h2 .count {
+				color: var(--accent);
+			}
+			.rail .body {
+				overflow-y: auto;
+				padding: 8px;
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+			}
+			.empty {
+				color: var(--muted);
+				font-size: 12px;
+				padding: 8px 6px;
+			}
+			.appr {
+				border: 1px solid var(--border);
+				border-radius: 7px;
+				padding: 9px 10px;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+			}
+			.appr .h {
+				display: flex;
+				gap: 6px;
+				align-items: center;
+			}
+			.appr .svc {
+				font-weight: 600;
+			}
+			.appr .method {
+				font-size: 10.5px;
+				color: var(--accent);
+				border: 1px solid var(--accent);
+				border-radius: 4px;
+				padding: 0 5px;
+			}
+			.appr .prompt {
+				font-family: var(--mono);
+				font-size: 11.5px;
+				color: var(--text);
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
+			.appr input,
+			.appr select {
+				font: inherit;
+				background: #0c1119;
+				color: var(--text);
+				border: 1px solid var(--border);
+				border-radius: 5px;
+				padding: 4px 7px;
+			}
+			.appr .row {
+				display: flex;
+				gap: 6px;
+			}
+			.appr .row button {
+				flex: 1;
+			}
+			.alert {
+				border: 1px solid var(--border);
+				border-left: 3px solid var(--amber);
+				border-radius: 6px;
+				padding: 7px 9px;
+				font-size: 12px;
+			}
+			.alert.q {
+				border-left-color: var(--red);
+			}
+			.alert .a-t {
+				color: var(--muted);
+				font-family: var(--mono);
+				font-size: 10.5px;
+			}
+			.alert .a-s {
+				font-weight: 600;
+			}
+			#toast {
+				position: fixed;
+				bottom: 16px;
+				left: 50%;
+				transform: translateX(-50%);
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				align-items: center;
+			}
+			.t-msg {
+				background: #1b2430;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 7px 14px;
+				font-size: 12px;
+				box-shadow: 0 6px 20px #0008;
+			}
+			.t-msg.error {
+				border-color: var(--red);
+				color: var(--red);
+			}
+			.t-msg.ok {
+				border-color: var(--green);
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<h1>pid <span>dashboard</span></h1>
+			<span id="ro" class="ro-badge" hidden>read-only</span>
+			<div class="spacer"></div>
+			<div class="conn"><span id="dot" class="dot"></span><span id="conn-text">connecting…</span></div>
+			<button id="reload-btn">Reload services</button>
+		</header>
+
+		<div id="cards"><div class="empty">waiting for services…</div></div>
+
+		<main>
+			<div id="timeline"></div>
+			<div class="rail">
+				<section>
+					<h2>Approvals <span id="appr-count" class="count"></span></h2>
+					<div class="body" id="approvals"><div class="empty">no pending approvals</div></div>
+				</section>
+				<section>
+					<h2>Alerts</h2>
+					<div class="body" id="alerts"><div class="empty">no alerts yet</div></div>
+				</section>
+			</div>
+		</main>
+
+		<div id="toast"></div>
+
+		<script>
+			"use strict";
+			// ── tiny helpers ──────────────────────────────────────────────────────
+			const $ = (id) => document.getElementById(id);
+			const el = (tag, cls, txt) => {
+				const n = document.createElement(tag);
+				if (cls) n.className = cls;
+				if (txt != null) n.textContent = txt;
+				return n;
+			};
+			const fmtTime = (iso) => {
+				const d = new Date(iso);
+				return Number.isNaN(+d) ? "" : d.toLocaleTimeString([], { hour12: false });
+			};
+			const fmtUptime = (iso) => {
+				if (!iso) return "";
+				let s = Math.floor((Date.now() - new Date(iso)) / 1000);
+				if (s < 0) s = 0;
+				const d = Math.floor(s / 86400),
+					h = Math.floor((s % 86400) / 3600),
+					m = Math.floor((s % 3600) / 60);
+				if (d) return `${d}d${h}h`;
+				if (h) return `${h}h${m}m`;
+				if (m) return `${m}m`;
+				return `${s}s`;
+			};
+			const usd = (n) => `$${(n ?? 0).toFixed(2)}`;
+			let readOnly = false;
+
+			function toast(msg, kind) {
+				const n = el("div", `t-msg ${kind || ""}`, msg);
+				$("toast").appendChild(n);
+				setTimeout(() => n.remove(), 3200);
+			}
+
+			// ── actions (POST to the facade) ──────────────────────────────────────
+			async function action(path, body) {
+				try {
+					const r = await fetch(`/api/${path}`, {
+						method: "POST",
+						headers: body ? { "content-type": "application/json" } : {},
+						body: body ? JSON.stringify(body) : undefined,
+					});
+					const j = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+					if (!j.ok) toast(j.error || "action failed", "error");
+					else toast("done", "ok");
+					return j;
+				} catch (e) {
+					toast(String(e), "error");
+					return { ok: false };
+				}
+			}
+
+			// ── service cards ─────────────────────────────────────────────────────
+			function renderCards(services, budgets) {
+				const wrap = $("cards");
+				wrap.innerHTML = "";
+				if (!services.length) {
+					wrap.appendChild(el("div", "empty", "no services — drop a YAML in the services dir and hit Reload"));
+					return;
+				}
+				for (const s of services) {
+					const c = el("div", `card ${s.state}`);
+
+					const top = el("div", "top");
+					top.appendChild(el("span", "name", s.name));
+					top.appendChild(el("span", `chip state ${s.state}`, s.state));
+					c.appendChild(top);
+
+					const chips = el("div", "chips");
+					if (s.pendingApprovals > 0) chips.appendChild(el("span", "chip pending", `${s.pendingApprovals} pending`));
+					if (s.orphaned) chips.appendChild(el("span", "chip warn", "orphaned"));
+					if (s.configChanged) chips.appendChild(el("span", "chip warn", "config changed"));
+					if (chips.children.length) c.appendChild(chips);
+
+					const meta = el("div", "meta");
+					meta.textContent = [s.pid ? `pid ${s.pid}` : null, s.startedAt ? `up ${fmtUptime(s.startedAt)}` : null]
+						.filter(Boolean)
+						.join("  ·  ");
+					if (meta.textContent) c.appendChild(meta);
+
+					const b = budgets[s.name];
+					if (b) c.appendChild(renderCost(b));
+
+					c.appendChild(renderActions(s));
+					wrap.appendChild(c);
+				}
+			}
+
+			function renderCost(b) {
+				const box = el("div");
+				const cap = b.caps?.daily_usd;
+				const spent = b.snapshot?.spentUsdDay ?? 0;
+				const line = el("div", "cost");
+				line.innerHTML = cap
+					? `today <b>${usd(spent)}</b> / ${usd(cap)}`
+					: `today <b>${usd(spent)}</b>`;
+				box.appendChild(line);
+				if (cap) {
+					const pct = Math.min(100, (spent / cap) * 100);
+					const bar = el("div", "bar");
+					const fill = el("i", pct >= 100 ? "over" : pct >= 80 ? "warn" : "");
+					fill.style.width = `${pct}%`;
+					bar.appendChild(fill);
+					box.appendChild(bar);
+				}
+				if (b.paused) box.appendChild(el("div", "cost", "⏸ budget-paused"));
+				return box;
+			}
+
+			function renderActions(s) {
+				const a = el("div", "actions");
+				if (readOnly) return a;
+				const add = (label, cls, fn) => {
+					const btn = el("button", cls, label);
+					btn.onclick = fn;
+					a.appendChild(btn);
+				};
+				const running = s.state === "running" || s.state === "starting";
+				if (s.state === "paused") add("Resume", "go", () => action(`services/${s.name}/resume`, {}));
+				else if (running) add("Stop", "danger", () => action(`services/${s.name}/stop`));
+				else if (s.state === "quarantined") add("Unquarantine", "go", () => action(`services/${s.name}/unquarantine`));
+				else add("Start", "go", () => action(`services/${s.name}/start`));
+				if (running) add("Restart", "", () => action(`services/${s.name}/restart`));
+				return a;
+			}
+
+			// ── approvals inbox ───────────────────────────────────────────────────
+			function renderApprovals(approvals) {
+				const body = $("approvals");
+				$("appr-count").textContent = approvals.length ? approvals.length : "";
+				body.innerHTML = "";
+				if (!approvals.length) {
+					body.appendChild(el("div", "empty", "no pending approvals"));
+					return;
+				}
+				for (const ap of approvals) body.appendChild(renderApproval(ap));
+			}
+
+			function renderApproval(ap) {
+				const box = el("div", "appr");
+				const h = el("div", "h");
+				h.appendChild(el("span", "svc", ap.service));
+				h.appendChild(el("span", "method", ap.method));
+				box.appendChild(h);
+
+				const req = ap.request || {};
+				const promptText =
+					req.message || req.title || ap.command || ap.toolName || "(awaiting input)";
+				box.appendChild(el("div", "prompt", promptText));
+
+				if (readOnly) return box;
+
+				// confirm → just approve/deny; select → pick an option; input/editor → free text.
+				let valueGetter = () => undefined;
+				if (ap.method === "select" && Array.isArray(req.options)) {
+					const sel = el("select");
+					for (const o of req.options) sel.appendChild(el("option", null, o));
+					box.appendChild(sel);
+					valueGetter = () => sel.value;
+				} else if (ap.method === "input" || ap.method === "editor") {
+					const inp = el("input");
+					inp.placeholder = req.placeholder || "value";
+					if (req.prefill) inp.value = req.prefill;
+					box.appendChild(inp);
+					valueGetter = () => inp.value;
+				}
+
+				const row = el("div", "row");
+				const approve = el("button", "go", "Approve");
+				approve.onclick = () => {
+					const value = valueGetter();
+					action(`approvals/${ap.id}/approve`, value !== undefined ? { value } : {});
+				};
+				const deny = el("button", "danger", "Deny");
+				deny.onclick = () => action(`approvals/${ap.id}/deny`, {});
+				row.appendChild(approve);
+				row.appendChild(deny);
+				box.appendChild(row);
+				return box;
+			}
+
+			// ── live timeline ─────────────────────────────────────────────────────
+			const TIMELINE_CAP = 600;
+			const SVC_HUE = {};
+			function svcColor(name) {
+				if (!(name in SVC_HUE)) {
+					let h = 0;
+					for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
+					SVC_HUE[name] = h;
+				}
+				return `hsl(${SVC_HUE[name]} 60% 68%)`;
+			}
+			function summarize(env) {
+				const d = env.data || {};
+				switch (env.type) {
+					case "pid_quarantine":
+						return `quarantined — ${d.signature} ×${d.count}/${d.threshold}`;
+					case "pid_budget_pause":
+						return `budget pause — ${(d.breached || []).map((b) => b.cap).join(", ")}`;
+					case "pid_budget_resume":
+						return `budget resume (${d.by || ""})`;
+					case "pid_approval":
+						return `approval ${d.decision || d.method || ""}`;
+					case "pid_config_changed":
+						return `config ${d.change} (by ${d.by})`;
+					case "tool_execution_start":
+						return d.toolName || d.name || "tool start";
+					case "tool_execution_end":
+						return `${d.toolName || d.name || "tool"}${d.isError ? " — error" : " ok"}`;
+					case "message_end":
+						return d.message?.usage?.cost?.total != null ? `assistant — ${usd(d.message.usage.cost.total)}` : "assistant";
+					default:
+						return "";
+				}
+			}
+			function appendEvent(env) {
+				const tl = $("timeline");
+				const stick = tl.scrollTop + tl.clientHeight >= tl.scrollHeight - 20;
+				const row = el("div", `ev ${env.source === "pid" ? "pid" : ""}`);
+				row.appendChild(el("span", "t", fmtTime(env.ts)));
+				const svc = el("span", "svc", env.service);
+				svc.style.color = svcColor(env.service);
+				row.appendChild(svc);
+				row.appendChild(el("span", "ty", env.type));
+				row.appendChild(el("span", "d", summarize(env)));
+				tl.appendChild(row);
+				while (tl.childElementCount > TIMELINE_CAP) tl.firstChild.remove();
+				if (stick) tl.scrollTop = tl.scrollHeight;
+				if (env.source === "pid" && env.type.startsWith("pid_")) maybeAlert(env);
+			}
+
+			// ── alerts (derived from intervention events) ──────────────────────────
+			function maybeAlert(env) {
+				const d = env.data || {};
+				let cls = "alert",
+					summary = null;
+				if (env.type === "pid_quarantine") {
+					cls = "alert q";
+					summary = `${env.service} quarantined — ${d.signature}`;
+				} else if (env.type === "pid_budget_pause") {
+					summary = `${env.service} budget-paused — ${(d.breached || []).map((b) => b.cap).join(", ")}`;
+				} else if (env.type === "pid_budget_resume") {
+					summary = `${env.service} resumed`;
+				}
+				if (!summary) return;
+				const box = $("alerts");
+				if (box.firstChild?.classList?.contains("empty")) box.innerHTML = "";
+				const a = el("div", cls);
+				a.appendChild(el("div", "a-t", fmtTime(env.ts)));
+				a.appendChild(el("div", "a-s", summary));
+				box.prepend(a);
+				while (box.childElementCount > 40) box.lastChild.remove();
+			}
+
+			// ── snapshot + connection ──────────────────────────────────────────────
+			function applySnapshot(s) {
+				renderCards(s.services || [], s.budgets || {});
+				renderApprovals(s.approvals || []);
+			}
+
+			function setConn(up) {
+				$("dot").className = `dot ${up ? "up" : "down"}`;
+				$("conn-text").textContent = up ? "connected" : "disconnected — retrying…";
+			}
+
+			let es;
+			function connect() {
+				es = new EventSource("/api/events");
+				es.addEventListener("snapshot", (e) => {
+					setConn(true);
+					applySnapshot(JSON.parse(e.data));
+				});
+				es.addEventListener("log", (e) => appendEvent(JSON.parse(e.data)));
+				es.onopen = () => setConn(true);
+				es.onerror = () => {
+					setConn(false);
+					// EventSource auto-reconnects; close+reopen only if it gave up.
+					if (es.readyState === EventSource.CLOSED) {
+						setTimeout(connect, 1500);
+					}
+				};
+			}
+
+			$("reload-btn").onclick = () => action("reload");
+
+			// Learn the mode once: read-only hides every action control and shows the badge. (The server
+			// also enforces it with a 403 on any POST — this is just so the UI doesn't offer dead buttons.)
+			fetch("/api/version")
+				.then((r) => r.json())
+				.then((v) => {
+					$("conn-text").title = `pid ${v.pid} · API v${v.api}`;
+					if (v.readOnly) {
+						readOnly = true;
+						$("ro").hidden = false;
+						$("reload-btn").hidden = true;
+					}
+				})
+				.catch(() => {})
+				.finally(connect); // connect after we know the mode, so the first snapshot renders correctly
+		</script>
+	</body>
+</html>

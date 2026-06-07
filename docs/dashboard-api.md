@@ -10,7 +10,7 @@ The example server in `examples/dashboard/` implements this by **shelling the pi
 - **Action responses mirror the CLI:** `{ "ok": true, "data": <payload> }` on success, `{ "ok": false, "error": "<message>" }` with a non-2xx status on failure — the same `data`/`error` the daemon returns to `--json`.
 - **Read responses** return the payload directly (the same JSON `pid <cmd> --json` prints).
 - Payload shapes are exactly the CLI `--json` shapes; see the cross-reference column below and the chronicle schema in `v0-spec.md` ("Log line schema").
-- Contract is versioned: `GET /api/version` → `{ "pid": "<cli version>", "api": 1 }`. Breaking changes bump `api`.
+- Contract is versioned: `GET /api/version` → `{ "pid": "<cli version>", "api": 1, "readOnly": <bool> }`. Breaking changes bump `api`; `readOnly` reflects the server's `--read-only` flag so a client can hide action controls (the server still enforces it with a 403 on any POST).
 
 ## Read endpoints (GET)
 
@@ -20,7 +20,7 @@ The example server in `examples/dashboard/` implements this by **shelling the pi
 | `GET /api/services/:name` | `ServiceStatus` | `pid status <name> --json` |
 | `GET /api/approvals` | `PendingApproval[]` | `pid approvals --json` |
 | `GET /api/budget/:name` | `BudgetView` (404 if the service has no budget) | `pid budget show <name> --json` |
-| `GET /api/version` | `{ pid, api }` | — |
+| `GET /api/version` | `{ pid, api, readOnly }` | — |
 | `GET /api/events` | SSE stream (see below) | `pid tail --raw` + the snapshot polls |
 
 `ServiceStatus` (per ADR 0010 / 0006) includes: `name`, `state`, `pid?`, `startedAt?`, `lastFailure?`, `pendingApprovals`, `configChanged`, `orphaned?`, and the service `config`. `BudgetView` includes `caps`, `snapshot` (`spentUsdDay/Week`, `tokensDay`, `dayEnd`, `weekEnd`, `override?`), `paused`, `breachedCaps`.
