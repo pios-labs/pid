@@ -49,6 +49,9 @@ async function dispatch(cmd: string, req: Request, supervisor: Supervisor): Prom
 			return supervisor.status(req.name as string | undefined);
 		case "start":
 			return supervisor.start(req.name as string);
+		case "run":
+			// One-shot supervised job (ADR 0014): blocks until the run finishes, returns its terminal status.
+			return supervisor.runJob(req.name as string);
 		case "stop":
 			return supervisor.stop(req.name as string);
 		case "restart":

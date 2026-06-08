@@ -13,9 +13,10 @@ model:
   id: claude-opus-4-8
   thinking: high
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 2 * * *  pid run codemod-api-v2
 trigger:
-  type: cron
-  schedule: "0 2 * * *"
+  type: manual
 
 budget:
   daily_usd: 25.00

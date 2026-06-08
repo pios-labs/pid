@@ -1,0 +1,4 @@
+scenario:      s11-run
+pi:            0.78.1
+ref-clone:     130ae577
+source:        real pi run (not a fixture)

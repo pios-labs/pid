@@ -8,9 +8,10 @@ prompt: |
   Run ./scrape.ts. If it fails because the target site changed, read the error,
   fix the selector, and retry. Append results to prices.jsonl.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 */6 * * *  pid run price-watch
 trigger:
-  type: cron
-  schedule: "0 */6 * * *"
+  type: manual
 
 budget:
   daily_usd: 3.00

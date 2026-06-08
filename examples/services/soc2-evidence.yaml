@@ -8,9 +8,10 @@ prompt: |
   and CloudTrail config against controls.md. Write findings to
   evidence/<date>.md. Report only — change nothing.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 6 * * 1  pid run soc2-evidence
 trigger:
-  type: cron
-  schedule: "0 6 * * 1"
+  type: manual
 
 budget:
   weekly_usd: 8.00

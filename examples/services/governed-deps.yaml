@@ -8,9 +8,10 @@ prompt: |
   apply the update, fix any resulting build/test breakage, and open a DRAFT PR
   explaining what changed and why it is safe.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 7 * * 1  pid run governed-deps
 trigger:
-  type: cron
-  schedule: "0 7 * * 1"
+  type: manual
 
 budget:
   daily_usd: 10.00

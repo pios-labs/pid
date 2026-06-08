@@ -23,9 +23,12 @@ const descriptorListSchema = z
 		}
 	});
 
+// Triggers are supervised jobs (ADR 0014): `manual` is the long-running model; `file_watch` runs a
+// one-shot job on a filesystem event. Time-based scheduling is delegated to the OS — point system
+// cron/launchd/systemd at `pid run <service>` — so pid does not reinvent cron. A `cron` trigger is
+// therefore rejected here (loud, not a silent no-op) rather than accepted and never fired.
 const triggerSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("manual") }),
-	z.object({ type: z.literal("cron"), schedule: z.string() }),
 	z.object({
 		type: z.literal("file_watch"),
 		path: z.string(),

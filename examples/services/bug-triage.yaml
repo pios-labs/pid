@@ -12,9 +12,10 @@ model:
   id: claude-sonnet-4-6
   thinking: medium
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   */30 * * * *  pid run bug-triage
 trigger:
-  type: cron
-  schedule: "*/30 * * * *"
+  type: manual
 
 budget:
   daily_usd: 15.00

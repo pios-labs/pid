@@ -111,6 +111,15 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	private readonly relauncher: Relauncher;
 	/** Set during shutdown() so finalizeExit treats every reap as deliberate (no relaunch). */
 	private shuttingDown = false;
+	/**
+	 * Services whose *current run* is a one-shot supervised job (`pid run` / a `file_watch` fire, ADR
+	 * 0014): auto-stopped after the turn's `agent_end`, and excluded from the relauncher (a job that
+	 * crashes fails and waits for its next trigger rather than being kept alive). Long-running `manual`
+	 * services are never in this set.
+	 */
+	private readonly jobMode = new Set<string>();
+	/** Resolvers for blocking `runJob` callers, fired by finalizeExit when the job's run ends. */
+	private readonly jobWaiters = new Map<string, (status: ServiceStatus) => void>();
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
@@ -396,6 +405,40 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	}
 
 	/**
+	 * Launch a one-shot supervised job (ADR 0014): mark the run job-mode (so it auto-stops after the
+	 * turn and is excluded from the relauncher), then start it. Fire-and-forget — used by the
+	 * `file_watch` trigger. Refuses to overlap a run already in flight, and a paused/quarantined
+	 * service is held (start()'s own guards). Returns once the job has *launched*, not finished.
+	 */
+	private async launchJob(name: string): Promise<{ name: string; state: ServiceState }> {
+		this.requireService(name);
+		if (this.running.has(name)) throw new Error(`a run is already in progress: ${name}`);
+		this.jobMode.add(name);
+		try {
+			return await this.start(name);
+		} catch (err) {
+			this.jobMode.delete(name);
+			throw err;
+		}
+	}
+
+	/**
+	 * Run a service once as a job and wait for it to finish (the `pid run` path / the integration point
+	 * for an external scheduler — `0 9 * * * pid run <svc>`). Resolves with the run's terminal status
+	 * once the turn completes and the job auto-stops (or crashes), so the CLI can report a real outcome.
+	 */
+	async runJob(name: string): Promise<ServiceStatus> {
+		const done = new Promise<ServiceStatus>((resolve) => this.jobWaiters.set(name, resolve));
+		try {
+			await this.launchJob(name);
+		} catch (err) {
+			this.jobWaiters.delete(name);
+			throw err;
+		}
+		return done;
+	}
+
+	/**
 	 * Cost-governor action: pause a service by stopping it and marking it `paused` (vs the
 	 * `stopped` that stop() leaves). The governor schedules the resume; resume() reverses it.
 	 */
@@ -671,6 +714,16 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		void this.governor?.handleEvent(name, event);
 		void this.crash.handleEvent(name, event);
 		this.approvals.handleEvent(name, event);
+
+		// Job auto-stop (ADR 0014): a one-shot job's turn ends at `agent_end` (willRetry false — not an
+		// in-flight retry). Stop it so it doesn't linger as an idle session; the deliberate stop means the
+		// relauncher won't bring it back. (If the agent blocked mid-turn on an approval, agent_end — and
+		// so this stop — correctly waits until the dialog is answered.)
+		if (this.jobMode.has(name) && isTerminalAgentEnd(event)) {
+			void this.stop(name).catch((err) => {
+				process.stderr.write(`[${name}] job auto-stop failed: ${err instanceof Error ? err.message : String(err)}\n`);
+			});
+		}
 	}
 
 	/**
@@ -766,10 +819,12 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			running.log.write(formatPidEvent(name, "pid_service_exit", { signature, code, signal, error: error?.message }, at));
 		}
 
-		// Eligible = an unexpected exit of a service that actually ran (not a deliberate stop, not an
-		// orphan, not a never-started misconfigured first start). Only eligible exits feed the restart
-		// relauncher and the proc-exit crash counter (ADR 0013).
-		const eligible = !deliberate && !record.orphaned && this.relauncher.isEligible(name);
+		// Eligible = an unexpected exit of a long-running service that actually ran (not a deliberate stop,
+		// not an orphan, not a one-shot job, not a never-started misconfigured first start). Only eligible
+		// exits feed the restart relauncher and the proc-exit crash counter (ADR 0013/0014). A job that
+		// crashes simply fails and waits for its next trigger.
+		const job = this.jobMode.has(name);
+		const eligible = !deliberate && !record.orphaned && !job && this.relauncher.isEligible(name);
 
 		// Crash-loop quarantine on repeated process-level failures (lifts ADR 0003's proc:exit deferral).
 		// Counted synchronously so the pid_quarantine line lands in the still-open chronicle.
@@ -835,6 +890,15 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 
 		running.log.end();
 
+		// A one-shot job's run has ended: clear job-mode and resolve any blocking `runJob` caller with the
+		// terminal status (ADR 0014). Done before the orphan deregister so the record is still readable.
+		this.jobMode.delete(name);
+		const waiter = this.jobWaiters.get(name);
+		if (waiter) {
+			this.jobWaiters.delete(name);
+			waiter(this.toStatus(record, this.pendingCounts().get(name) ?? 0));
+		}
+
 		// An orphaned service (its YAML was removed on reload while it ran) has no definition to
 		// restart from, so this stop is terminal: drop it from the registry entirely (ADR 0010).
 		if (record.orphaned) this.deregister(name);
@@ -889,4 +953,15 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
  */
 function configsEqual(a: ServiceConfig, b: ServiceConfig): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * True for the `agent_end` that ends a job's turn for good (ADR 0014): pi has finished and is NOT about
+ * to auto-retry (`willRetry !== true`). Mirrors the crash detector's willRetry guard so a job isn't
+ * auto-stopped mid-retry. Defensive against malformed events (pid consumes an external stream).
+ */
+function isTerminalAgentEnd(event: unknown): boolean {
+	if (typeof event !== "object" || event === null) return false;
+	const ev = event as Record<string, unknown>;
+	return ev.type === "agent_end" && ev.willRetry !== true;
 }

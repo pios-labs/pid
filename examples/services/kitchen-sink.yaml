@@ -74,11 +74,11 @@ args:
 # --- trigger : exactly one type ---
 
 trigger:
-  type: manual                # run only when you `pid start kitchen-sink`
-# trigger:                    # ...or on a cron schedule:
-#   type: cron
-#   schedule: "0 2 * * *"
-# trigger:                    # ...or when files change under a path:
+  type: manual                # long-running: `pid start kitchen-sink` (stays up)
+# For a SCHEDULED run, pid does not reinvent cron (ADR 0014) — keep trigger: manual and point your
+# OS scheduler at the one-shot supervised job:
+#   crontab:  0 2 * * *  pid run kitchen-sink
+# trigger:                    # ...or run a one-shot job when files change under a path:
 #   type: file_watch
 #   path: ~/inbox/
 #   events: [add, change, unlink]   # default: [add]

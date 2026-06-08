@@ -96,6 +96,41 @@ program
 	});
 
 program
+	.command("run <name>")
+	.description(
+		"Run a service once as a supervised job (start → run → auto-stop). The integration point for an OS scheduler, e.g. `0 9 * * * pid run <name>`. Blocks until the run finishes; exits non-zero if it did not complete cleanly.",
+	)
+	.option("--json", "output the raw JSON payload instead of a receipt")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		try {
+			const socket = await connect();
+			const response = await sendCommand(socket, { cmd: "run", name });
+			socket.end();
+			if (!response.ok) {
+				process.stderr.write(`pid: ${response.error}\n`);
+				process.exitCode = 1;
+				return;
+			}
+			const data = response.data as ServiceStatus;
+			if (opts.json) {
+				process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+			} else {
+				const why = data.lastFailure?.signature;
+				process.stdout.write(
+					data.state === "stopped"
+						? `✓ ran ${name} → completed\n`
+						: `✗ ran ${name} → ${data.state}${why ? ` (${why})` : ""}\n`,
+				);
+			}
+			// Cron-friendly: a job that did not complete cleanly (crashed/failed) exits non-zero.
+			if (data.state !== "stopped") process.exitCode = 1;
+		} catch (err) {
+			process.stderr.write(`pid: ${errMsg(err)}\n`);
+			process.exitCode = 1;
+		}
+	});
+
+program
 	.command("stop <name>")
 	.description("Stop a running service")
 	.option("--json", "output the raw JSON payload instead of a receipt")
