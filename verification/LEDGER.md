@@ -37,6 +37,8 @@ Verdicts: **verified** (real receipt) · **fixed** (was wrong → fixed + receip
 | 20 | SSE `/api/events` relays the real chronicle live (pi + pid_* events) | `server.mjs` `startLogStream` (`pid tail --raw`) → SSE | `docs/dashboard-api.md` §stream | `snapshot` frame + `log` frames incl. a pi event, `pid_budget_pause`, `pid_service_exit` | `s8`: all four SSE conditions met from a real run | **verified** |
 | 21 | A POST action mutates the real daemon through the facade | `server.mjs` `actionArgs`→`pidJson` | `docs/dashboard-api.md` POST table | `POST /api/budget/bud/reset`→`ok:true`, spend zeroes | `s8`: `ok:true`, `tokensDay→0` | **verified** |
 | 22 | `pid_service_exit` is synthesized on a real abnormal exit (ADR 0012) | `supervisor/index.ts` `finalizeExit` | v0-spec "Log line schema" | bad command → `{signature:"proc:spawn_error",code,signal,error}` | `s8-dead`: `proc:spawn_error`, `error:"spawn … ENOENT"`, streamed to the facade | **verified** |
+| 23 | Real **USD** is charged from `message_end.usage.cost.total` | `governor/cost.ts:106-118` `extractUsage` (`cost.total`) | real anthropic `usage.cost.total` > 0 | a real haiku turn charges real dollars | `s9`: `cost.total=$0.002393` (input+output, real) | **verified** (was blocked on zai `$0`) |
+| 24 | `daily_usd` / `weekly_usd` caps enforce on real spend → pause | `governor/cost.ts:142-153` `evaluateBreach` | both USD caps over their windows | one $0.0024 turn breaches both 0.001 caps → pause | `s9`: `pid_budget_pause` breached `daily_usd`+`weekly_usd`, `resumeAt`=weekEnd (the later window) | **verified** (CP7) |
 
 ## CP1 — reconciliation (captures × fixtures × consuming code × pi-source)
 
@@ -100,7 +102,10 @@ The most important checkpoint: it exercises the OTHER host→pi `send()` path �
 
 The example dashboard's HTTP+SSE+POST facade (`examples/dashboard/server.mjs`), pointed at a **real daemon running real services** (driven through a `PID_BIN` wrapper over this build), faithfully relays everything over its documented surface: real read snapshots (`/api/version|services|budget`), the live chronicle over SSE (`snapshot` + `log` frames carrying a real pi event, `pid_budget_pause`, and `pid_service_exit`), and a POST action that mutates the daemon (`budget reset` → spend zeroes). The facade touches pid **only** by shelling the CLI — so this also re-confirms the CLI surface is complete enough to build a GUI on. Receipt: `bash verification/scenarios/s8-dashboard.sh` (+ `sse-check.mjs`). The observability mandate's read path is now real-pi-proven end to end (chronicle → CLI → facade → SSE/HTTP).
 
-## Open (next checkpoints)
+## CP7 — dollars: real USD enforcement (`s9-dollars.sh`)
 
-- dollars (USD caps, `cost.total`) → CP7 (needs an API model wired on signal; zai reports `$0`).
-- regression armor (gated `test:real`, fixture-drift guard) + honest re-baseline of CLAUDE.md / v0-spec → CP8.
+The one dimension blocked all session: zai reports `cost.total=0` (real tokens, no dollars). With a paid model (anthropic `claude-haiku-4-5`, pi's stored auth — no env var needed) a real turn finally charges real dollars. Pre-flight confirmed `cost.total>0`; the batched scenario then proved both USD caps: one ~$0.0024 turn breached `daily_usd` **and** `weekly_usd` (0.001 each) → `pid_budget_pause` listing both, with `resumeAt` = the later (weekly) window end — the "resume only once every breached window has rolled" rule. `budget show` reflects real `spentUsdDay`. Receipt: `bash verification/scenarios/s9-dollars.sh` (needs the anthropic auth; ~$0.002/run).
+
+## Open (next checkpoint)
+
+- **CP8** — regression armor (gated `npm run test:real` that skips without auth + uses tiny prompts; a fixture-drift guard so a unit test fails if a fixture diverges from its real capture) + the honest re-baseline of CLAUDE.md "in flight" and v0-spec to the verified reality, with ADR corrections. This is the only remaining work; every load-bearing runtime claim now has a receipt above.
