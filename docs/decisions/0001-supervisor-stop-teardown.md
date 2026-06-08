@@ -36,7 +36,12 @@ pi has three clean-shutdown triggers, all of which run `runtimeHost.dispose()` (
 - pi makes SIGTERM also flush (drops the `signal !== "SIGTERM"` guard) → SIGTERM-only becomes equivalent and simpler.
 - pi stops treating stdin EOF as shutdown → this degrades to the SIGTERM fallback on every stop; watch for that regression.
 
+## Verification
+
+**Verified against real pi 0.78.1 (CP5, 2026-06-08).** The exit-code contract this ADR rests on — a *source-only* claim until now — was confirmed empirically by a direct probe of the real binary (`verification/scenarios/pi-exit-probe.mjs`): stdin-close → exit **0** (flush runs), SIGTERM → exit **143** (flush skipped, pi's handler ran). Through pid, `pid stop` reaches `stopped` with the full chronicle intact and no `pid_service_exit` (clean stop). One correction to the mental model: real pi emits **no** terminal shutdown event — the "flush" is just buffered stdout draining, so the exit code (0 vs 143) is the only observable marker. (The `session_shutdown` line in `test/fixtures/fake-pi.mjs` is a synthetic test-only stand-in, now annotated as such.) Receipt: `verification/scenarios/s6-stop-shutdown.sh`; ledger rows 14–15.
+
 ## References
 
 - Full rationale + source line refs: the doc comment on `Supervisor.stop()` in `pid/src/supervisor/index.ts`
 - `pi-upstream-status.md` — D2 (revised), A5
+- `verification/LEDGER.md` (CP5) — the real-pi receipts

@@ -30,3 +30,20 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0009](0009-chronicle-event-selection.md) — Chronicle event selection: persist lifecycle events, drop pi's high-frequency streaming frames (`message_update`/`tool_execution_update`) — **Accepted**
 - [0010](0010-reload-semantics.md) — `pid reload`: service-set reconciliation by disk presence, never interrupting running work (orphan-on-stop, staged config + `pid_config_changed`) — **Accepted**
 - [0011](0011-example-dashboard.md) — Example dashboard: API-first HTTP/SSE facade (pure CLI consumer), actions-on + `--read-only`, localhost+origin floor, embeddable web component — **Accepted**
+- [0012](0012-service-exit-event.md) — `pid_service_exit`: synthetic chronicle event for abnormal process termination (spawn error / non-zero exit) — **Accepted**
+
+## Verification status
+
+These decisions describe pi-runtime behaviour. After a verification campaign re-earned every load-bearing claim against the **real `pi` binary** (the prior fake-pi-only tests had hidden a core gap — the prompt was never delivered), each is now backed by a re-runnable receipt. The single cross-reference is **[`../../verification/LEDGER.md`](../../verification/LEDGER.md)** (24 rows, CP1–CP7); receipts live in `verification/scenarios/`. The ADR↔checkpoint map:
+
+| ADR | Verified by | Receipt |
+|-|-|-|
+| 0001 (stop teardown) | CP5 | `s6-stop-shutdown.sh` (exit 0 vs 143) |
+| 0002 (cost governor) | CP2 (tokens), CP7 (USD) | `s5-budget-pause.sh`, `s9-dollars.sh` |
+| 0003 (crash detector) | CP1, CP3 | `errored-turn.sh`, `s3-crash-quarantine.sh` |
+| 0004 (approval router) | CP4 | `s4-approval.sh confirm`/`select` (the host→pi reply path) |
+| 0005 / 0007 (log envelope, intervention events) | CP2/CP3/CP4 | the `pid_*` payloads in the above captures |
+| 0008/0009/0011/0012 (observability, dashboard, exit event) | CP6 | `s8-dashboard.sh` |
+| 0010 (reload) | CP5 | `s7-reload.sh` (running work never interrupted) |
+
+A gated `npm run test:real` re-runs all receipts; a fixture-drift unit test (`test/fixture-drift.test.ts`) fails if any fake-pi fixture diverges from its committed real capture (CP8).
