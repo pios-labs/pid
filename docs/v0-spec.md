@@ -118,18 +118,18 @@ args: [string]                 # extra pi CLI flags not covered above (default: 
                                # conflicts with YAML fields above are rejected at load time
 
 trigger:
-  type: manual | cron | file_watch | webhook
+  type: manual | file_watch    # ADR 0014. cron is delegated to the OS (see below); webhook → v0.2
   # type-specific fields:
-  schedule: "0 6 * * *"        # cron expression (for cron)
   path: ~/inbox/               # path to watch (for file_watch)
   events: [add, change]        # which fs events (default: [add])
-  port: 9000                   # for webhook (deferred to v0.2)
+  # Time-based scheduling is NOT a native trigger — pid does not reinvent cron. Keep `type: manual`
+  # and point your OS scheduler at the one-shot supervised job: `0 6 * * *  pid run <service>`.
 
 budget:
   daily_usd: number            # optional; default unlimited
   weekly_usd: number           # optional
   daily_tokens: number         # optional
-  on_exceed: pause | quarantine | notify   # default: pause
+  on_exceed: pause | notify    # default: pause
   reset_tz: "UTC"              # default UTC
 
 restart:
@@ -169,6 +169,7 @@ The daemon listens on `~/.pi/pid/pid.sock`. CLI sends one JSON request per line;
 | `list` | All services with summary status |
 | `status <name>` | Detailed status for one service |
 | `start <name>` | Start a stopped service |
+| `run <name>` | Run a service once as a supervised job (start → run → auto-stop), with every guardrail applied. Blocks until the run ends; exits non-zero if it did not complete cleanly. The integration point for an OS scheduler — `0 9 * * * pid run <name>` (ADR 0014). |
 | `stop <name>` | Stop a running service (closes pi's stdin for a clean `shutdown(0)` — dispose + final-output flush, then exit 0; SIGTERM→SIGKILL only if pi ignores it). Verified against real pi (S6): stdin-close → exit 0 vs SIGTERM → 143; pi emits **no** terminal event — the "flush" just drains buffered stdout, and the exit code is the marker |
 | `restart <name>` | Stop + start |
 | `resume <name> [--daily <usd\|none>] [--weekly <usd\|none>] [--daily-tokens <n\|none>] [--unlimited] [--reset]` | Resume a budget-paused service with an optional window-scoped override. Each `--daily`/`--weekly`/`--daily-tokens` sets that cap's ceiling for the current window (a number) or lifts it (`none`); other caps keep guarding. `--unlimited` lifts all caps this window; `--reset` zeroes the current windows under the original caps. No flags = resume under existing caps (re-pauses at once if still over). A bare `start` on a budget-paused service is refused — use `resume`. |
@@ -477,7 +478,7 @@ Example (a daily-budget pause, then the automatic resume when the window rolls o
 
 ## Open questions (decide before code)
 
-1. **Trigger types in v0**: `manual` and `cron` are easy. `file_watch` needs `chokidar` or similar. `webhook` needs an HTTP server. Recommendation: ship `manual`, `cron`, `file_watch`; defer `webhook` to v0.2.
+1. ~~**Trigger types in v0**~~ **(decided, ADR 0014):** ship `manual` (long-running) + `file_watch` (one-shot job on a fs event, via polling — no `chokidar` dep, mirroring ADR 0008). **Native `cron` is cut** — pid doesn't reinvent the OS scheduler; time-based runs use `pid run` from system cron/launchd. `webhook` → v0.2. A native `picron` may be revisited later if it earns its place.
 2. **Service file format**: YAML is most ergonomic, TOML is more constrained, JSON is universally parsed but verbose. Recommendation: YAML with JSON Schema validation.
 3. **Notification channels in v0**: just `pid status` + stderr? Or also system notifications (libnotify, osascript)? Recommendation: stderr + status only for v0; channels in v0.2.
 4. **Cost-per-tool-call gate (`spend:>1.00`)**: pi doesn't expose per-tool-call cost projection. Implementing would mean estimating cost before execution. Recommendation: defer to v0.2.
@@ -486,20 +487,21 @@ Example (a daily-budget pause, then the automatic resume when the window rolls o
 
 ## v0 milestone definition
 
-Ship v0 when all true:
+Ship v0 when all true. **Checked items are verified against the real `pi` binary** (0.78.1) with re-runnable receipts in `verification/LEDGER.md` (CP1–CP7 + the post-audit remediation, rows 25–28); the unit suite is 266 green, lint/build clean.
 
-- [ ] Daemon starts, loads service files, supervises subprocesses with restart policy
-- [ ] All CLI commands above implemented
-- [ ] Cost governor enforces `daily_usd` with `pause` + auto-resume
-- [ ] Crash-loop quarantine triggers on threshold, surfaces on `status`
-- [ ] Approval inbox routes `extension_ui_request`; CLI approve/deny works
-- [ ] State persists across daemon restart with no service interruption
-- [ ] 3 example service files in `examples/`
-- [ ] README + quickstart + 3-minute screencast
-- [ ] Installable from npm
-- [ ] systemd user unit + launchd plist included as examples
-- [ ] Test suite covers supervisor, cost governor, crash detector, approval router
-- [ ] One end-to-end smoke test that runs an actual pi subprocess
+- [x] Daemon starts, loads service files, supervises subprocesses **with a real restart policy** (ADR 0013; receipt s10)
+- [x] All CLI commands above implemented (incl. `run`, `reload`, `dashboard`)
+- [x] Cost governor enforces `daily_usd`/`weekly_usd` (tokens **and** dollars) with `pause` + auto-resume (s5, s9)
+- [x] Crash-loop quarantine triggers on threshold (in-session **and** process-exit), surfaces on `status` (s3, s10)
+- [x] Approval inbox routes `extension_ui_request`; CLI approve/deny round-trips through real pi (s4)
+- [x] State persists across daemon restart; `reload` never interrupts a running service (s7)
+- [x] Example service files in `examples/` (9, CI-validated) + the example dashboard (s8)
+- [x] README + quickstart (rebaselined to the verified reality) — *3-minute screencast still to record*
+- [x] systemd user unit + launchd plist included as examples
+- [x] Test suite covers supervisor, cost governor, crash detector, approval router, relauncher, file_watch, fixture-drift
+- [x] End-to-end checks run an **actual pi subprocess** — the `verification/scenarios/` receipts + gated `npm run test:real`
+- [ ] **Installable from npm** — the package is publish-ready (`@pios-labs/pid`, `bin`, `npm pack` clean); `npm publish` is the go-live step
+- [ ] **3-minute screencast** — to record before announce
 
 ## Out-of-scope reminders (future versions)
 
