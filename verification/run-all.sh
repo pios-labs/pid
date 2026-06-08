@@ -40,6 +40,9 @@ if have zai; then
 	run "s6 stop / shutdown"   "$DIR/s6-stop-shutdown.sh"
 	run "s7 reload"            "$DIR/s7-reload.sh"
 	run "s8 dashboard"         "$DIR/s8-dashboard.sh"
+	run "s10 restart relauncher" "$DIR/s10-restart.sh"
+	run "s11 pid run (job)"      "$DIR/s11-run.sh"
+	run "s12 file_watch"         "$DIR/s12-file-watch.sh"
 else
 	skip "zai scenarios (s1–s8, errored-turn)" "no zai auth"
 fi
