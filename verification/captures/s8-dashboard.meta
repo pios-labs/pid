@@ -1,0 +1,5 @@
+scenario:      s8-dashboard (facade fed by a real daemon)
+pi:            0.78.1
+ref-clone:     130ae577
+source:        real pi run via the dashboard facade (examples/dashboard/server.mjs)
+captures:      s8-dashboard-bud.jsonl (pid_budget_pause), s8-dashboard-dead.jsonl (pid_service_exit)
