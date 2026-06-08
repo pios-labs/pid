@@ -31,10 +31,12 @@ Routine implementation does not need one — a focused code comment carries impl
 - [0010](0010-reload-semantics.md) — `pid reload`: service-set reconciliation by disk presence, never interrupting running work (orphan-on-stop, staged config + `pid_config_changed`) — **Accepted**
 - [0011](0011-example-dashboard.md) — Example dashboard: API-first HTTP/SSE facade (pure CLI consumer), actions-on + `--read-only`, localhost+origin floor, embeddable web component — **Accepted**
 - [0012](0012-service-exit-event.md) — `pid_service_exit`: synthetic chronicle event for abnormal process termination (spawn error / non-zero exit) — **Accepted**
+- [0013](0013-restart-relauncher.md) — Restart relauncher: auto-restart on crash (policy/backoff/give-up); unlocks process-exit crash quarantine — **Accepted**
+- [0014](0014-triggers-jobs-and-pid-run.md) — Triggers as supervised jobs: `pid run` + native `file_watch`; native cron delegated to the OS — **Accepted**
 
 ## Verification status
 
-These decisions describe pi-runtime behaviour. After a verification campaign re-earned every load-bearing claim against the **real `pi` binary** (the prior fake-pi-only tests had hidden a core gap — the prompt was never delivered), each is now backed by a re-runnable receipt. The single cross-reference is **[`../../verification/LEDGER.md`](../../verification/LEDGER.md)** (24 rows, CP1–CP7); receipts live in `verification/scenarios/`. The ADR↔checkpoint map:
+These decisions describe pi-runtime behaviour. After a verification campaign re-earned every load-bearing claim against the **real `pi` binary** (the prior fake-pi-only tests had hidden a core gap — the prompt was never delivered) — and a pre-launch audit then caught two features documented-but-unbuilt (restart, triggers), which were built and verified — each is now backed by a re-runnable receipt. The single cross-reference is **[`../../verification/LEDGER.md`](../../verification/LEDGER.md)** (28 rows: CP1–CP7 + the post-audit remediation); receipts live in `verification/scenarios/`, and `npm run test:real` runs them all (14/14 green against pi 0.78.1). The ADR↔checkpoint map:
 
 | ADR | Verified by | Receipt |
 |-|-|-|
@@ -45,5 +47,7 @@ These decisions describe pi-runtime behaviour. After a verification campaign re-
 | 0005 / 0007 (log envelope, intervention events) | CP2/CP3/CP4 | the `pid_*` payloads in the above captures |
 | 0008/0009/0011/0012 (observability, dashboard, exit event) | CP6 | `s8-dashboard.sh` |
 | 0010 (reload) | CP5 | `s7-reload.sh` (running work never interrupted) |
+| 0013 (restart relauncher + proc-exit quarantine) | post-audit | `s10-restart.sh` (kill→relaunch; kill-loop→quarantine) |
+| 0014 (`pid run` + `file_watch` triggers) | post-audit | `s11-run.sh`, `s12-file-watch.sh` |
 
 A gated `npm run test:real` re-runs all receipts; a fixture-drift unit test (`test/fixture-drift.test.ts`) fails if any fake-pi fixture diverges from its committed real capture (CP8).
