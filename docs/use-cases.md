@@ -1,6 +1,6 @@
 # What people use pid for
 
-`pid` supervises [pi](https://pi.dev) agents that run in the background: it enforces per-service cost budgets, restarts them when they crash, quarantines the ones stuck in a failure loop, and routes any approval requests to one place. This page is about *when that's worth it* — the real jobs pid is good at, with a ready-to-run service file for each.
+`pid` supervises [pi](https://github.com/earendil-works/pi-mono) agents that run in the background: it enforces per-service cost budgets, restarts them when they crash, quarantines the ones stuck in a failure loop, and routes any approval requests to one place. This page is about *when that's worth it* — the real jobs pid is good at, with a ready-to-run service file for each.
 
 Every example here is a real `examples/services/*.yaml` in this repo, validated in CI. For a single annotated file that exercises (almost) every available field, see [`examples/services/kitchen-sink.yaml`](../examples/services/kitchen-sink.yaml).
 
@@ -33,9 +33,10 @@ model:
   id: claude-sonnet-4-6
   thinking: medium
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   */30 * * * *  pid run bug-triage
 trigger:
-  type: cron
-  schedule: "*/30 * * * *"
+  type: manual
 
 budget:
   daily_usd: 15.00
@@ -77,9 +78,10 @@ model:
   id: claude-opus-4-8
   thinking: high
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 2 * * *  pid run codemod-api-v2
 trigger:
-  type: cron
-  schedule: "0 2 * * *"
+  type: manual
 
 budget:
   daily_usd: 25.00
@@ -111,9 +113,10 @@ prompt: |
   apply the update, fix any resulting build/test breakage, and open a DRAFT PR
   explaining what changed and why it is safe.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 7 * * 1  pid run governed-deps
 trigger:
-  type: cron
-  schedule: "0 7 * * 1"
+  type: manual
 
 budget:
   daily_usd: 10.00
@@ -140,9 +143,10 @@ prompt: |
   and CloudTrail config against controls.md. Write findings to
   evidence/<date>.md. Report only — change nothing.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 6 * * 1  pid run soc2-evidence
 trigger:
-  type: cron
-  schedule: "0 6 * * 1"
+  type: manual
 
 budget:
   weekly_usd: 8.00
@@ -167,9 +171,10 @@ prompt: |
   Run ./scrape.ts. If it fails because the target site changed, read the error,
   fix the selector, and retry. Append results to prices.jsonl.
 
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 */6 * * *  pid run price-watch
 trigger:
-  type: cron
-  schedule: "0 */6 * * *"
+  type: manual
 
 budget:
   daily_usd: 3.00

@@ -95,13 +95,10 @@ That's it. The daemon is now sitting there, idle, waiting for commands.
 
 ```bash
 pid list
-# {
-#   "ok": true,
-#   "data": []
-# }
+# No services.
 ```
 
-Empty. Nothing to supervise yet. Let's give it something.
+Empty. Nothing to supervise yet. (Every command prints a human-readable view by default; add `--json` for the raw payload.) Let's give it something.
 
 ---
 
@@ -140,20 +137,29 @@ Walking through it:
 - **`cwd`** is where the agent will be launched (so `~/` expansion and relative paths work right).
 - **`prompt`** is the initial instruction sent to the agent when it (re)starts. The agent then operates within whatever skills, AGENTS.md, and extensions pi finds in `cwd`.
 - **`model`** specifies which LLM to use. `provider` is the pi provider name; `id` is the model ID. You can also set `thinking` level and `scoped` model lists for cycling. If omitted, pi uses whatever model it resolves from its own settings. See [Model Selection](./model-selection.md) for the full reference, including dynamic model switching.
-- **`trigger`** says when to run. `file_watch` means "wake the agent up whenever a file appears in `~/inbox/`." Other options: `manual` (only when you run `pid start`), `cron` (a schedule like `"0 6 * * *"`).
-- **`budget`** is the safety net. `daily_usd: 1.00` means "if the agent has spent more than $1 in API costs today, pause it until midnight." `on_exceed` can be `pause`, `quarantine` (no auto-resume), or `notify` (just log a warning).
-- **`restart`** policy. `on-failure` restarts only if the agent exits non-zero. `max_consecutive: 3` means if it crashes three times in a row, give up.
+- **`trigger`** says when to run. `file_watch` means "run a one-shot supervised job whenever a file appears in `~/inbox/`." The other option is `manual` (a long-running service you `pid start`, or a one-shot you `pid run`). For *time*-based schedules, `pid` doesn't reinvent cron — point your OS scheduler at `pid run` (e.g. `0 6 * * * pid run <service>`); see Scheduling below.
+- **`budget`** is the safety net. `daily_usd: 1.00` means "if the agent has spent more than $1 in API costs today, pause it until midnight." `on_exceed` can be `pause` (the default) or `notify` (just log a warning).
+- **`restart`** policy for a long-running run. `on-failure` (the default) re-spawns a crashed run with exponential backoff; `max_consecutive: 3` means if it keeps crashing fast it gives up after three tries (and a process that keeps dying the same way is quarantined). `always` restarts on any exit; `never` opts out.
 
-Now enable and start it:
+Now arm the watcher:
 
 ```bash
-pid enable inbox-watcher    # mark it for auto-start on daemon boot
-pid start inbox-watcher     # start it right now
-pid status                  # what's running?
+pid enable inbox-watcher    # arm the file_watch trigger (disable is the kill switch)
+pid status                  # what's armed / running?
 pid logs -f inbox-watcher   # follow its output, turn-grouped
 ```
 
-The agent is now running. Drop a file into `~/inbox/` and watch the agent wake up and process it. If it crashes, `pid` restarts it. If it spends more than $1 today, `pid` pauses it. If it does anything you've marked for approval (we'll get to that), it'll wait for you to approve in `pid approvals`.
+The watcher is now armed. Drop a file into `~/inbox/` and watch a supervised job wake up, process it, and stop. If a run crashes, `pid` handles it per your `restart` policy. If it spends more than $1 today, `pid` pauses it. If it does anything you've marked for approval (we'll get to that), it waits for you in `pid approvals`.
+
+### Scheduling
+
+`pid` supervises the run; your OS scheduler triggers it. For "every morning at 6am," keep the service `manual` and add a crontab line:
+
+```cron
+0 6 * * *  pid run inbox-watcher
+```
+
+`pid run` starts the service, runs its prompt once with every guardrail applied, then stops — exiting non-zero if the run failed, so cron reports it. (We don't out-cron cron; a native `picron` may come later if it earns its place.)
 
 That's the whole loop.
 
@@ -174,19 +180,17 @@ budget:
   on_exceed: pause
 ```
 
-What actually happens: every time the supervised pi subprocess emits a `message_end` event for an assistant message (the thing pi sends back after every LLM call), `pid` reads the cost from `event.message.usage.cost.total` and adds it to a running per-service spend total. The total is persisted in `~/.pi/pid/budget/<service>.json` so it survives daemon restarts. When the total crosses the threshold, `pid` sends `abort` to the subprocess and marks the service `paused`. At midnight UTC, the window resets and the service auto-resumes (or stays paused forever if you used `on_exceed: quarantine`).
+What actually happens: every time the supervised pi subprocess emits a `message_end` event for an assistant message (the thing pi sends back after every LLM call), `pid` reads the cost from `event.message.usage.cost.total` and adds it to a running per-service spend total. The total is persisted in `~/.pi/pid/budget/<service>.json` so it survives daemon restarts. When the total crosses the threshold, `pid` gracefully stops the subprocess (closing its stdin so pi flushes its final cost events) and marks the service `paused`. At midnight UTC the window resets and the service auto-resumes.
 
 You can see consumption any time:
 
 ```bash
-pid budget inbox-watcher
-# {
-#   "service": "inbox-watcher",
-#   "daily_usd": 2.00,
-#   "spent_usd_window": 0.43,
-#   "window_start": "...",
-#   "window_end": "..."
-# }
+pid budget show inbox-watcher
+# inbox-watcher
+#   daily      $0.43 / $1.00
+#   tokens     12,481 today
+#   window     resets 00:00 UTC
+# (add --json for the raw BudgetView)
 ```
 
 This is genuinely impossible with `systemd` (which doesn't know about money) or pi alone (which only tracks cost per session, not across many sessions of the same service).
@@ -271,7 +275,7 @@ In effect, the union of pi's extension surface plus `pid`'s service surface is y
 
 These are the genuinely interesting extension points that aren't there yet. If any of these excite you, that's a contribution waiting to happen:
 
-- **Custom trigger types** — beyond cron, file-watch, and (soon) webhooks. Imagine `trigger: { type: github_pr, repo: ... }` or `trigger: { type: slack_mention, channel: ... }`.
+- **Custom trigger types** — beyond `file_watch` (and a possible native `picron`): imagine `trigger: { type: github_pr, repo: ... }` or `trigger: { type: slack_mention, channel: ... }`.
 - **Approval delivery channels** — beyond the CLI inbox. Slack DMs, mobile push, web dashboard.
 - **Cost-adapter plugins** — for users on alternative billing models (per-token-bucket rates, prepaid pools, team quotas).
 - **Notification sinks** — where "your agent paused" / "your agent quarantined" should land.
@@ -356,6 +360,6 @@ Four corrections applied during cross-referencing against pi source at commit `1
 
 2. **Subprocess spawn description**: `pi --mode rpc` → `pi --mode rpc --session-id <service-name>`. Pi 0.76.0 added `--session-id` which gives pid deterministic per-service session identity, resumable across restarts. Source: `packages/coding-agent/CHANGELOG.md`.
 
-3. **`pid budget show`** → **`pid budget`**: Aligned with v0-spec.md command table which uses `budget <name>` without a `show` subcommand.
+3. **Budget command** is `pid budget show <name>` (a `show` subcommand under `budget`, sibling to `budget reset <name>`). An earlier draft of this doc wrote `pid budget <name>`; corrected to match the shipped CLI.
 
 4. **Pi version requirement**: `pi >= 0.75` → `pi >= 0.75.4` (for `willRetry` on `agent_end` events), recommended `>= 0.76.0` (for `--session-id`). Source: `packages/coding-agent/CHANGELOG.md`.

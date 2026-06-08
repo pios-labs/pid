@@ -2,7 +2,7 @@
 
 > Run your pi agents in the background without the surprises.
 
-`pid` supervises [pi](https://pi.dev) agents as long-running services. It restarts them when they crash, enforces per-service cost and token budgets, quarantines services stuck in failure loops, and routes any approval requests they make to a unified inbox.
+`pid` supervises [pi](https://github.com/earendil-works/pi-mono) agents as long-running services. It restarts them when they crash, enforces per-service cost and token budgets, quarantines services stuck in failure loops, and routes any approval requests they make to a unified inbox.
 
 If you've ever wanted to leave a pi agent running overnight, or schedule one to fire every morning, and were nervous about cost surprises, infinite loops, or destructive actions taken while you weren't watching — `pid` is the missing piece.
 
@@ -20,44 +20,54 @@ None of these are possible with system daemons alone — they have no semantic a
 
 ## Quick start
 
+`pid` requires the [`pi`](https://github.com/earendil-works/pi-mono) CLI on your `PATH` — it supervises `pi`, it doesn't bundle it.
+
 ```bash
-npm install -g @pios/pid
-pid daemon &           # start the supervisor (or use systemd; see below)
+npm install -g @pios-labs/pid
+pid daemon &           # start the supervisor (or run it under systemd/launchd; see below)
 ```
 
-Define a service in `~/.pi/services/inbox-watcher.yaml`:
+Define a service in `~/.pi/pid/services/inbox-watcher.yaml`:
 
 ```yaml
 name: inbox-watcher
 cwd: ~/inbox
 prompt: "Check ~/inbox/ for new files and process them per AGENTS.md"
 trigger:
-  type: file_watch
+  type: file_watch         # run a one-shot supervised job when a file lands
   path: ~/inbox/
 budget:
   daily_usd: 2.00
   on_exceed: pause
-restart: on-failure
+restart:
+  policy: on-failure       # auto-restart a crashed long-running run
 gate:
-  - bash:rm
+  - bash:rm                # route these to the approval inbox instead of auto-running
   - bash:git push
 ```
 
-Enable and start:
+Arm the watcher and watch it work:
 
 ```bash
-pid enable inbox-watcher
-pid start inbox-watcher
+pid enable inbox-watcher      # arm the file_watch trigger (disable is the kill switch)
 pid status                    # all services at a glance
 pid logs -f inbox-watcher     # tail, turn-aware
 pid approvals                 # pending approval requests
 ```
 
+**Scheduling.** `pid` doesn't reinvent cron — it supervises the run, your OS scheduler triggers it. Point cron/launchd/systemd at the one-shot `pid run`:
+
+```cron
+0 9 * * *  pid run morning-report
+```
+
+`pid run <service>` starts the service, runs its prompt once with every guardrail (budget, approvals, crash detection, observability) applied, then stops — and exits non-zero if the run failed, so cron reports it.
+
 ## How it works
 
 `pid` is a long-running daemon. For each running service it spawns one `pi --mode rpc` subprocess, consumes its JSONL event stream, and applies cost tracking, crash detection, and approval routing. Service state persists to disk, so `pid` recovers cleanly across its own restarts.
 
-`pid` requires no changes to upstream pi. It uses pi's documented RPC protocol and extension hooks. The pi project is upstream; `pios/pid` is a separate distribution that depends on `@earendil-works/pi-coding-agent`.
+`pid` requires no changes to upstream pi, and imports no pi code. It spawns the installed `pi` binary (`pi --mode rpc`) and consumes only pi's documented RPC/JSONL surface — its own dependencies are just `commander`, `yaml`, and `zod`. The pi project is upstream and separate; `pid` is a supervisor that drives it as a subprocess.
 
 ## Running pid itself as a system service
 
@@ -104,7 +114,7 @@ v0 is a working preview. The CLI surface and service file schema are stable; int
 
 ## Relationship to pi
 
-`pid` is built and maintained independently of the upstream [pi](https://pi.dev) project. We depend on `@earendil-works/pi-coding-agent` as a published package and use only its documented RPC and SDK surfaces. We do not fork pi. Bug reports about pi itself should go to the [pi-mono](https://github.com/earendil-works/pi-mono) repo, not here.
+`pid` is built and maintained independently of the upstream [pi](https://github.com/earendil-works/pi-mono) project. It does not fork pi or import pi as a library — it invokes the separately-installed `pi` CLI and speaks only its documented RPC/JSONL protocol, so it tracks pi by version, not by code. Bug reports about pi itself should go to the [pi-mono](https://github.com/earendil-works/pi-mono) repo, not here.
 
 ## Contributing
 

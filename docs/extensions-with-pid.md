@@ -73,9 +73,10 @@ export default function (pi: ExtensionAPI) {
 ```yaml
 name: news-summariser
 cwd: ~/projects/news
+# Scheduled by your OS — pid supervises the run, cron triggers it (ADR 0014):
+#   0 8 * * *  pid run news-summariser
 trigger:
-  type: cron
-  schedule: "0 8 * * *"
+  type: manual
 prompt: |
   Fetch https://hnrss.org/frontpage, pick the top 5 stories,
   summarise each in one sentence, write to ~/reports/$(date +%F).md
