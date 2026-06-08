@@ -118,11 +118,11 @@ A pre-launch audit (2026-06-08, four parallel agents + own verification) caught 
 |-|-|-|-|-|-|
 | 25 | `restart:` auto-restarts a crashed service (ADR 0013) | `governor/restart.ts` `Relauncher`; `supervisor/index.ts` `finalizeExit` | external `kill -9` of a live pi → relaunched under `policy:always` (new pid) | `s10`: pid `94759→94861→94891`; `pid_restart{scheduled}` ×2; `pid_service_exit{proc:signal_SIGKILL}` ×3 | **built + verified** (was: dead config, never re-spawned) |
 | 26 | A process-exit crash loop quarantines (lifts ADR 0003 proc:exit deferral) | `crash.ts` `observeExit`/`procExitSignature`; `finalizeExit` | 3 identical SIGKILLs → terminal quarantine | `s10`: `pid_quarantine{proc:signal_SIGKILL,count:3,by:crash_detector}`; state `quarantined` | **built + verified** |
+| 27 | `pid run` runs a service once as a supervised job, then auto-stops (ADR 0014) | `supervisor/index.ts` `runJob`/`launchJob` + agent_end auto-stop; daemon `run`; `cli.ts` | `pid run` blocks → real turn → exit 0, service auto-stopped | `s11`: `✓ ran → completed`, exit 0, real `agent_end`, state `stopped`, no pid | **built + verified** (the cron replacement) |
+| 28 | `file_watch` fires a one-shot job on a real fs event (ADR 0014) | `triggers/file-watch.ts` `FileWatchManager`; supervisor `syncTriggers` | enable arms; a dropped file → a job runs → auto-stops | `s12`: idle until file drop; file → real `agent_end` (prompt delivered); auto-stopped, no pid | **built + verified** |
 
-Restart policy/backoff/`max_consecutive`/reset matrix: pure logic, unit-tested with injected timers (`test/restart.test.ts`) — not re-run against real pi (PLAN pure-logic exclusion).
+- Restart policy/backoff/`max_consecutive`/reset matrix → pure, unit-tested with injected timers (`test/restart.test.ts`). Trigger model (job vs long-running): file_watch diff logic pure-tested (`test/file-watch.test.ts`); the run/auto-stop lifecycle is integration, verified by s11/s12. Native **cron deleted** (delegated to the OS via `pid run`; rejected loudly — `test/trigger-schema.test.ts`); a future "picron" may revisit (ADR 0014).
 
-## Open (still to build, this remediation)
+## Open (still to do, this remediation)
 
-- **cron trigger** (ADR 0014) — schedule-driven re-fire. Next.
-- **file_watch trigger** (ADR 0015) — path-watch re-fire (reusing `watchFile`, ADR 0008).
-- Then: rewrite README/intro/examples to the now-true reality (the audit's broken-quickstart + false-dependency fixes) + final launch-readiness verdict.
+- Rewrite README/intro/examples to the now-true reality — the audit's findings: broken quickstart (pkg name `@pios-labs/pid`, path `~/.pi/pid/services/`, valid `restart:` object), the **false `@earendil-works` dependency claim**, `on_exceed: quarantine` (not a value), `pi.dev` link, and the cron→`pid run` reframe. Then the final launch-readiness verdict.

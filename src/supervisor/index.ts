@@ -9,6 +9,7 @@ import { RotatingLogWriter } from "../log/writer.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
 import type { StateStore } from "../state/store.js";
+import { FileWatchManager } from "../triggers/file-watch.js";
 import { attachJsonlReader, serializeJsonLine } from "../util/jsonl.js";
 import { formatPidEvent, formatPiEvent, persistsToChronicle } from "../util/log.js";
 import { expandTilde, logsDir } from "../util/paths.js";
@@ -120,6 +121,8 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	private readonly jobMode = new Set<string>();
 	/** Resolvers for blocking `runJob` callers, fired by finalizeExit when the job's run ends. */
 	private readonly jobWaiters = new Map<string, (status: ServiceStatus) => void>();
+	/** Always present: the native `file_watch` trigger — fires a one-shot job on a fs event (ADR 0014). */
+	private readonly fileWatch: FileWatchManager;
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
@@ -130,6 +133,15 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		// The relauncher re-spawns via the supervisor's own start(); the richer return type is fine
 		// where RestartActions.start expects Promise<void>.
 		this.relauncher = new Relauncher({ actions: { start: (name) => this.start(name).then(() => undefined) } });
+		// A file_watch event launches a one-shot job (fire-and-forget); launchJob's already-running guard
+		// makes overlapping fires a no-op, so a burst of file changes can't pile up runs.
+		this.fileWatch = new FileWatchManager({
+			actions: {
+				fire: (name) => {
+					void this.launchJob(name).catch(() => {});
+				},
+			},
+		});
 		for (const config of opts.services.services) {
 			this.services.set(config.name, { name: config.name, config, state: "stopped" });
 			this.wirePolicies(config.name, config);
@@ -584,6 +596,8 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			}
 		}
 
+		// Re-arm file_watch watchers to the reconciled, enabled set (new paths, removed services). ADR 0014.
+		await this.syncTriggers();
 		return summary;
 	}
 
@@ -628,12 +642,16 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	async enable(name: string): Promise<{ name: string; enabled: boolean }> {
 		this.requireService(name);
 		await this.state.setEnabled(name, true);
+		// A file_watch service arms its watcher on enable (the kill switch is `disable`); manual services
+		// just record the bit and auto-start on the next boot, as before.
+		await this.syncTriggers();
 		return { name, enabled: true };
 	}
 
 	async disable(name: string): Promise<{ name: string; enabled: boolean }> {
 		this.requireService(name);
 		await this.state.setEnabled(name, false);
+		await this.syncTriggers();
 		return { name, enabled: false };
 	}
 
@@ -644,6 +662,9 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			// A quarantined service stays held across restarts (ADR 0003) — never auto-start it
 			// back into the crash loop. init() already restored its state from the persisted set.
 			if (this.requireService(name).state === "quarantined") continue;
+			// A file_watch service is not "started" — it is armed (its watcher fires a job on a file
+			// event, ADR 0014). syncTriggers() below arms the enabled ones; don't spawn it here.
+			if (this.requireService(name).config.trigger.type === "file_watch") continue;
 			try {
 				// A budgeted service that was over-cap before a restart stays held until its window
 				// resets; recover() re-arms the resume timer from the persisted budget state.
@@ -659,6 +680,21 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 				process.stderr.write(`pid: failed to start ${name}: ${err instanceof Error ? err.message : String(err)}\n`);
 			}
 		}
+		await this.syncTriggers();
+	}
+
+	/**
+	 * Reconcile the file_watch watchers to the set of *enabled* file_watch services (ADR 0014): arm the
+	 * enabled ones, disarm the rest. Idempotent (register no-ops on an unchanged config), so it is safe
+	 * to call after boot, on enable/disable, and after a reload. `enable`/`disable` are the kill switch.
+	 */
+	private async syncTriggers(): Promise<void> {
+		const enabled = new Set(await this.state.getEnabled());
+		for (const [name, record] of this.services) {
+			const trigger = record.config.trigger;
+			if (trigger.type === "file_watch" && enabled.has(name)) this.fileWatch.register(name, trigger);
+			else if (this.fileWatch.has(name)) this.fileWatch.unregister(name);
+		}
 	}
 
 	async shutdown(): Promise<void> {
@@ -669,6 +705,7 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		this.governor?.dispose();
 		this.approvals.dispose();
 		this.relauncher.dispose();
+		this.fileWatch.dispose();
 		// Reap every running child so the daemon doesn't orphan pi processes.
 		// Graceful teardown lives in stop(); this is plain SIGTERM→SIGKILL.
 		await Promise.all([...this.running.values()].map((rp) => this.terminate(rp.child)));
