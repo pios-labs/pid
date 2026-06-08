@@ -106,6 +106,23 @@ The example dashboard's HTTP+SSE+POST facade (`examples/dashboard/server.mjs`), 
 
 The one dimension blocked all session: zai reports `cost.total=0` (real tokens, no dollars). With a paid model (anthropic `claude-haiku-4-5`, pi's stored auth — no env var needed) a real turn finally charges real dollars. Pre-flight confirmed `cost.total>0`; the batched scenario then proved both USD caps: one ~$0.0024 turn breached `daily_usd` **and** `weekly_usd` (0.001 each) → `pid_budget_pause` listing both, with `resumeAt` = the later (weekly) window end — the "resume only once every breached window has rolled" rule. `budget show` reflects real `spentUsdDay`. Receipt: `bash verification/scenarios/s9-dollars.sh` (needs the anthropic auth; ~$0.002/run).
 
-## Open (next checkpoint)
+## CP8 — regression armor (`verification/run-all.sh`, `test/fixture-drift.test.ts`)
 
-- **CP8** — regression armor (gated `npm run test:real` that skips without auth + uses tiny prompts; a fixture-drift guard so a unit test fails if a fixture diverges from its real capture) + the honest re-baseline of CLAUDE.md "in flight" and v0-spec to the verified reality, with ADR corrections. This is the only remaining work; every load-bearing runtime claim now has a receipt above.
+Gated `npm run test:real` (self-skips without a pi binary / auth; per-provider gating) re-runs every scenario in one command. The fixture-drift guard (plain `npm test`) spawns each fake and asserts its shapes still match the committed real captures — proven load-bearing (re-injecting the old string-`result` drift turns it red). This makes the original failure mode mechanically unrepeatable.
+
+## Launch-blocker remediation (post-audit, product-as-pitched = product-as-launched)
+
+A pre-launch audit (2026-06-08, four parallel agents + own verification) caught two features documented + sold but **not wired** — the same claim-vs-reality class as the fake-test failure. Steven's call: build them for real, each verified, so the docs become true. (pi-congruence, no-reinvention, dep hygiene, and the verified runtime all passed the audit; these were the only gaps.)
+
+| # | Claim (source) | Current impl (file:line) | Expected (pre-run) | Actual (receipt) | Verdict |
+|-|-|-|-|-|-|
+| 25 | `restart:` auto-restarts a crashed service (ADR 0013) | `governor/restart.ts` `Relauncher`; `supervisor/index.ts` `finalizeExit` | external `kill -9` of a live pi → relaunched under `policy:always` (new pid) | `s10`: pid `94759→94861→94891`; `pid_restart{scheduled}` ×2; `pid_service_exit{proc:signal_SIGKILL}` ×3 | **built + verified** (was: dead config, never re-spawned) |
+| 26 | A process-exit crash loop quarantines (lifts ADR 0003 proc:exit deferral) | `crash.ts` `observeExit`/`procExitSignature`; `finalizeExit` | 3 identical SIGKILLs → terminal quarantine | `s10`: `pid_quarantine{proc:signal_SIGKILL,count:3,by:crash_detector}`; state `quarantined` | **built + verified** |
+
+Restart policy/backoff/`max_consecutive`/reset matrix: pure logic, unit-tested with injected timers (`test/restart.test.ts`) — not re-run against real pi (PLAN pure-logic exclusion).
+
+## Open (still to build, this remediation)
+
+- **cron trigger** (ADR 0014) — schedule-driven re-fire. Next.
+- **file_watch trigger** (ADR 0015) — path-watch re-fire (reusing `watchFile`, ADR 0008).
+- Then: rewrite README/intro/examples to the now-true reality (the audit's broken-quickstart + false-dependency fixes) + final launch-readiness verdict.

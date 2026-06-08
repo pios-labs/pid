@@ -3,7 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type ApprovalActions, ApprovalRouter, type PendingApproval } from "../approvals/router.js";
 import { BudgetStore, type OverrideState } from "../budget/store.js";
 import { type BudgetActions, type BudgetView, CostGovernor } from "../governor/cost.js";
-import { type CrashActions, CrashDetector } from "../governor/crash.js";
+import { type CrashActions, CrashDetector, procExitSignature } from "../governor/crash.js";
+import { Relauncher } from "../governor/restart.js";
 import { RotatingLogWriter } from "../log/writer.js";
 import type { LoadResult } from "../services/loader.js";
 import { buildPiArgs, type ServiceConfig } from "../services/schema.js";
@@ -95,9 +96,6 @@ interface RunningProcess {
  * Owns the lifecycle of all supervised services. Spawns pi --mode rpc subprocesses,
  * consumes their event streams, applies restart policy, and exposes status via the
  * control plane.
- *
- * v0 scaffold: methods stub out, structure is in place. Real implementations land in
- * follow-up commits.
  */
 export class Supervisor implements BudgetActions, CrashActions, ApprovalActions {
 	private readonly state: StateStore;
@@ -109,6 +107,10 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	private readonly crash: CrashDetector;
 	/** Always present: routes pi dialogs to the CLI inbox and auto-answers per policy (ADR 0004). */
 	private readonly approvals: ApprovalRouter;
+	/** Always present: re-spawns a service that exits unexpectedly, per its `restart:` policy (ADR 0013). */
+	private readonly relauncher: Relauncher;
+	/** Set during shutdown() so finalizeExit treats every reap as deliberate (no relaunch). */
+	private shuttingDown = false;
 
 	constructor(opts: SupervisorOptions) {
 		this.state = opts.state;
@@ -116,14 +118,12 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		this.running = new Map();
 		this.crash = new CrashDetector({ actions: this });
 		this.approvals = new ApprovalRouter({ actions: this });
+		// The relauncher re-spawns via the supervisor's own start(); the richer return type is fine
+		// where RestartActions.start expects Promise<void>.
+		this.relauncher = new Relauncher({ actions: { start: (name) => this.start(name).then(() => undefined) } });
 		for (const config of opts.services.services) {
 			this.services.set(config.name, { name: config.name, config, state: "stopped" });
-			this.crash.register(config.name, config.quarantine);
-			this.approvals.register(config.name, {
-				gate: config.gate,
-				autoApprove: config.auto_approve,
-				onUnmatched: config.on_unmatched,
-			});
+			this.wirePolicies(config.name, config);
 		}
 	}
 
@@ -287,6 +287,10 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 
 		record.state = "running";
 		record.startedAt = new Date().toISOString();
+		// Reaching `running` makes the service relaunch-eligible (ADR 0013): a later unexpected exit
+		// will be re-spawned per its restart policy. A start that never gets here throws (below), and is
+		// deliberately NOT relaunched — a misconfigured service fails loudly instead of looping.
+		this.relauncher.markStarted(name);
 
 		// Deliver the service's task to the agent. pi's rpc mode does nothing until it receives a
 		// `{type:"prompt", message}` command on stdin (pi/.../docs/rpc.md "Prompting"); without this the
@@ -350,6 +354,11 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	 */
 	async stop(name: string): Promise<{ name: string; state: ServiceState }> {
 		const record = this.requireService(name);
+		// A stop is deliberate: cancel any pending relaunch and disarm relaunch-eligibility (ADR 0013),
+		// so neither a backoff timer nor the next exit re-spawns a service the operator (or a pause /
+		// quarantine, which route through here) is taking down. Done first, before the not-running guard,
+		// so a relaunch armed during backoff is cancelled even though no child is live right now.
+		this.relauncher.cancel(name);
 		const running = this.running.get(name);
 		if (!running) {
 			// Not running. A manual stop of a budget-paused service means "I'm taking control —
@@ -542,7 +551,7 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		await this.wireBudget(config.name, config);
 	}
 
-	/** (Re-)wire the always-on consumers — crash detector + approval router — to a service's config. */
+	/** (Re-)wire the always-on consumers — crash detector, approval router, relauncher — to a config. */
 	private wirePolicies(name: string, config: ServiceConfig): void {
 		this.crash.register(name, config.quarantine);
 		this.approvals.register(name, {
@@ -550,6 +559,7 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 			autoApprove: config.auto_approve,
 			onUnmatched: config.on_unmatched,
 		});
+		this.relauncher.register(name, config.restart);
 	}
 
 	/** Wire (or unwire) the cost governor for a service, opening its budget store if it declares a budget. */
@@ -569,6 +579,7 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		this.crash.unregister(name);
 		this.approvals.unregister(name);
 		this.governor?.unregister(name);
+		this.relauncher.unregister(name);
 	}
 
 	async enable(name: string): Promise<{ name: string; enabled: boolean }> {
@@ -608,9 +619,13 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 	}
 
 	async shutdown(): Promise<void> {
-		// Cancel any pending budget resume + approval-timeout timers so none outlives the daemon.
+		// Flag first: every child reap below is deliberate, so finalizeExit must NOT relaunch them as the
+		// daemon goes down (ADR 0013). Cancel pending budget resume + approval-timeout + relaunch timers
+		// so none outlives the daemon.
+		this.shuttingDown = true;
 		this.governor?.dispose();
 		this.approvals.dispose();
+		this.relauncher.dispose();
 		// Reap every running child so the daemon doesn't orphan pi processes.
 		// Graceful teardown lives in stop(); this is plain SIGTERM→SIGKILL.
 		await Promise.all([...this.running.values()].map((rp) => this.terminate(rp.child)));
@@ -732,34 +747,92 @@ export class Supervisor implements BudgetActions, CrashActions, ApprovalActions 
 		record.pid = undefined;
 
 		const at = new Date().toISOString();
-		if (error) {
-			record.state = "failed";
-			record.lastFailure = { at, signature: "proc:spawn_error" };
-		} else if (code === 0 || signal !== null) {
-			// Clean exit (graceful stop yields code 0), or terminated by a signal — our own
-			// SIGTERM/SIGKILL fallback in stop()/shutdown(). The crash detector will later
-			// distinguish a self-inflicted fatal signal from a deliberate teardown.
-			record.state = "stopped";
-		} else {
-			record.state = "failed";
-			record.lastFailure = { at, signature: `proc:exit_${code}` };
-		}
+		// A deliberate teardown — our own stop()/pause()/quarantine() (state "stopping") or the daemon
+		// shutdown reap (shuttingDown) — is not a failure, even though it ends in SIGTERM/SIGKILL. An
+		// external signal (kill -9, OOM) on a still-running service IS a failure, and is relaunched
+		// under `always` (ADR 0013). This corrects the old "any signal ⇒ stopped" reading.
+		const deliberate = record.state === "stopping" || this.shuttingDown;
+		const spawnError = error !== null;
+		const signature = deliberate ? null : procExitSignature(code, signal, spawnError);
+		const failure = signature !== null;
+
+		record.state = deliberate ? "stopped" : failure ? "failed" : "stopped";
+		if (failure) record.lastFailure = { at, signature };
 
 		// Abnormal termination produces no pi event — the process never started (spawn error) or died
 		// mid-flight — so synthesize a documented `pid_service_exit` chronicle event for it (ADR 0012).
-		// Otherwise a spawn failure or crash is invisible to the timeline/dashboard, surfacing only as
-		// `lastFailure` on a live status. Written to the still-open writer before we end it; a deliberate
-		// clean stop needs no synthetic event (its graceful pi shutdown is already in the chronicle).
-		if (record.state === "failed" && record.lastFailure) {
-			running.log.write(
-				formatPidEvent(
-					name,
-					"pid_service_exit",
-					{ signature: record.lastFailure.signature, code, signal, error: error?.message },
-					at,
-				),
-			);
+		// Written to the still-open writer before we end it; a deliberate clean stop needs none.
+		if (failure) {
+			running.log.write(formatPidEvent(name, "pid_service_exit", { signature, code, signal, error: error?.message }, at));
 		}
+
+		// Eligible = an unexpected exit of a service that actually ran (not a deliberate stop, not an
+		// orphan, not a never-started misconfigured first start). Only eligible exits feed the restart
+		// relauncher and the proc-exit crash counter (ADR 0013).
+		const eligible = !deliberate && !record.orphaned && this.relauncher.isEligible(name);
+
+		// Crash-loop quarantine on repeated process-level failures (lifts ADR 0003's proc:exit deferral).
+		// Counted synchronously so the pid_quarantine line lands in the still-open chronicle.
+		let quarantined = false;
+		if (eligible && failure) {
+			const outcome = this.crash.observeExit(name, signature);
+			if (outcome.quarantine) {
+				quarantined = true;
+				record.state = "quarantined";
+				running.log.write(
+					formatPidEvent(
+						name,
+						"pid_quarantine",
+						{
+							signature,
+							count: outcome.count,
+							threshold: outcome.threshold,
+							windowSeconds: outcome.windowSeconds,
+							by: "crash_detector",
+						},
+						at,
+					),
+				);
+				this.relauncher.cancel(name);
+				void this.state.setQuarantined(name, true).catch(() => {});
+			}
+		}
+
+		// Auto-restart per the service's `restart:` policy (ADR 0013). The relauncher arms the backoff
+		// timer; we log its decision here while the chronicle is open (the relaunch appends to this file).
+		if (eligible && !quarantined) {
+			const uptimeMs = record.startedAt ? Date.now() - Date.parse(record.startedAt) : 0;
+			const decision = this.relauncher.onExit(name, { failed: failure, uptimeMs });
+			if (decision.action === "relaunch") {
+				running.log.write(
+					formatPidEvent(
+						name,
+						"pid_restart",
+						{
+							phase: "scheduled",
+							attempt: decision.attempt,
+							max: decision.max,
+							delayMs: decision.delayMs,
+							signature,
+							by: "relauncher",
+						},
+						at,
+					),
+				);
+			} else if (decision.action === "give-up") {
+				running.log.write(
+					formatPidEvent(
+						name,
+						"pid_restart",
+						{ phase: "exhausted", attempt: decision.attempt, max: decision.max, signature, by: "relauncher" },
+						at,
+					),
+				);
+			}
+		} else if (deliberate || record.orphaned) {
+			this.relauncher.cancel(name);
+		}
+
 		running.log.end();
 
 		// An orphaned service (its YAML was removed on reload while it ran) has no definition to

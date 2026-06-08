@@ -15,11 +15,12 @@ import type { ServiceConfig } from "../services/schema.js";
  * a crash loop will not fix itself on a timer, so there is no auto-resume — a human
  * clears it with `pid unquarantine` once the underlying fault is fixed.
  *
- * Scope (ADR 0003 decision 4): v0 counts only the three *in-session* signals, which
- * loop while the process stays alive. The fourth source, a non-zero process exit
- * (`proc:exit_<code>`), can only *loop* once something relaunches the process — an
- * auto-restart policy or a trigger re-fire, neither of which exists yet — so it is
- * derived and shown on status by the supervisor but not yet fed here.
+ * Scope: the three *in-session* signals arrive on the event stream and are counted by
+ * `handleEvent`/`deriveSignature`. The fourth source — a process-level exit
+ * (`proc:exit_<code>` / `proc:signal_<SIG>` / `proc:spawn_error`) — can only *loop* now
+ * that the restart relauncher (ADR 0013) re-spawns a crashed service; it is counted by
+ * `observeExit`, which the supervisor calls from `finalizeExit`. (This lifts ADR 0003
+ * decision 4's deferral, which held until a relauncher existed.)
  */
 
 /** The quarantine block as it appears post-parse (threshold + window always present via defaults). */
@@ -100,6 +101,30 @@ export function deriveSignature(event: unknown): string | null {
 	}
 }
 
+/**
+ * The crash signature for a process-level exit (ADR 0013), or null for a clean/expected exit. A spawn
+ * error and an external signal (e.g. `kill -9`, OOM) are both failures; a non-zero code is a failure;
+ * a clean `exit 0` is not. The supervisor classifies deliberate teardown out before calling this.
+ */
+export function procExitSignature(
+	code: number | null,
+	signal: NodeJS.Signals | null,
+	spawnError: boolean,
+): string | null {
+	if (spawnError) return "proc:spawn_error";
+	if (signal) return `proc:signal_${signal}`;
+	if (typeof code === "number" && code !== 0) return `proc:exit_${code}`;
+	return null;
+}
+
+/** The outcome of recording a process-exit failure: whether it tripped the quarantine threshold. */
+export interface ExitOutcome {
+	quarantine: boolean;
+	count: number;
+	threshold: number;
+	windowSeconds: number;
+}
+
 interface Tracked {
 	config: QuarantineConfig;
 	/** Recent failures, newest-first. In memory only — resets on daemon restart (ADR 0003 decision 3). */
@@ -136,6 +161,29 @@ export class CrashDetector {
 				process.stderr.write(`[${name}] crash detector failed: ${err instanceof Error ? err.message : String(err)}\n`);
 			});
 		return t.queue;
+	}
+
+	/**
+	 * Synchronously record a process-level failure exit and report whether it crosses the quarantine
+	 * threshold (ADR 0013). The proc-exit counterpart to `handleEvent`'s in-session path. Synchronous —
+	 * unlike `handleEvent` — because the supervisor calls it from `finalizeExit` and must write the
+	 * `pid_quarantine` line to the still-open chronicle before the process's log stream closes; it
+	 * therefore returns the decision rather than driving `actions.quarantine()` itself. Shares the same
+	 * rolling window/`quarantined` state as the in-session path.
+	 */
+	observeExit(name: string, signature: string): ExitOutcome {
+		const t = this.tracked.get(name);
+		if (!t) return { quarantine: false, count: 0, threshold: 0, windowSeconds: 0 };
+		const nowMs = this.now();
+		t.recent.unshift({ at: new Date(nowMs).toISOString(), signature });
+		const cutoff = nowMs - t.config.window_seconds * 1000;
+		t.recent = t.recent.filter((f) => Date.parse(f.at) >= cutoff);
+		const threshold = t.config.same_failure_threshold;
+		const windowSeconds = t.config.window_seconds;
+		const count = t.recent.filter((f) => f.signature === signature).length;
+		if (t.quarantined || count < threshold) return { quarantine: false, count, threshold, windowSeconds };
+		t.quarantined = true;
+		return { quarantine: true, count, threshold, windowSeconds };
 	}
 
 	status(name: string): CrashStatus | undefined {

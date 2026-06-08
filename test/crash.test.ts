@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { type CrashActions, CrashDetector, deriveSignature, type QuarantineConfig } from "../src/governor/crash.js";
+import {
+	type CrashActions,
+	CrashDetector,
+	deriveSignature,
+	procExitSignature,
+	type QuarantineConfig,
+} from "../src/governor/crash.js";
 
 const T0 = Date.parse("2026-06-01T10:00:00Z");
 
@@ -94,6 +100,42 @@ describe("deriveSignature", () => {
 	it("falls back to 'unknown' on missing fields rather than throwing", () => {
 		expect(deriveSignature({ type: "tool_execution_end", isError: true })).toBe("tool:unknown:error");
 		expect(deriveSignature({ type: "extension_error" })).toBe("ext:unknown:unknown");
+	});
+});
+
+describe("procExitSignature (ADR 0013)", () => {
+	it("names process-level failures and ignores a clean exit", () => {
+		expect(procExitSignature(0, null, false)).toBeNull(); // clean self-exit
+		expect(procExitSignature(1, null, false)).toBe("proc:exit_1");
+		expect(procExitSignature(137, null, false)).toBe("proc:exit_137");
+		expect(procExitSignature(null, "SIGKILL", false)).toBe("proc:signal_SIGKILL");
+		expect(procExitSignature(null, null, true)).toBe("proc:spawn_error");
+		// spawnError and signal take precedence over a (null) code.
+		expect(procExitSignature(0, "SIGTERM", false)).toBe("proc:signal_SIGTERM");
+	});
+});
+
+describe("CrashDetector.observeExit (proc-exit quarantine)", () => {
+	it("quarantines at the threshold on repeated same-signature exits, synchronously", () => {
+		const h = harness();
+		const det = new CrashDetector({ actions: h.actions, now: h.now });
+		det.register("svc", config); // threshold 3
+		expect(det.observeExit("svc", "proc:signal_SIGKILL")).toMatchObject({ quarantine: false, count: 1 });
+		expect(det.observeExit("svc", "proc:signal_SIGKILL")).toMatchObject({ quarantine: false, count: 2 });
+		const third = det.observeExit("svc", "proc:signal_SIGKILL");
+		expect(third).toMatchObject({ quarantine: true, count: 3, threshold: 3, windowSeconds: 300 });
+		expect(det.status("svc")?.quarantined).toBe(true);
+		// Does not re-quarantine after the first trip.
+		expect(det.observeExit("svc", "proc:signal_SIGKILL").quarantine).toBe(false);
+	});
+
+	it("counts per-signature: mixed exit codes do not trip", () => {
+		const h = harness();
+		const det = new CrashDetector({ actions: h.actions, now: h.now });
+		det.register("svc", config);
+		expect(det.observeExit("svc", "proc:exit_1").quarantine).toBe(false);
+		expect(det.observeExit("svc", "proc:exit_2").quarantine).toBe(false);
+		expect(det.observeExit("svc", "proc:spawn_error").quarantine).toBe(false);
 	});
 });
 
