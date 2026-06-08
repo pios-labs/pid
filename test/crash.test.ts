@@ -11,7 +11,13 @@ const T0 = Date.parse("2026-06-01T10:00:00Z");
 function toolEnd(toolName: string, isError: boolean): unknown {
 	// result is an object in real pi ({content,details}), never a bare string — byte-faithful so the
 	// fake can never be "more generous" than reality (the drift class that hid the original gap).
-	return { type: "tool_execution_end", toolCallId: "tc1", toolName, result: { content: [{ type: "text", text: "..." }], details: {} }, isError };
+	return {
+		type: "tool_execution_end",
+		toolCallId: "tc1",
+		toolName,
+		result: { content: [{ type: "text", text: "..." }], details: {} },
+		isError,
+	};
 }
 
 function extensionError(extensionPath: string, event: string): unknown {

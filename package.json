@@ -38,7 +38,8 @@
 		"dev": "tsx watch src/daemon.ts",
 		"start": "node dist/daemon.js",
 		"test": "vitest --run",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"test:real": "bash verification/run-all.sh"
 	},
 	"dependencies": {
 		"commander": "12.1.0",
